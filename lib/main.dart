@@ -1746,7 +1746,7 @@ class _CekByCodePageState extends State<CekByCodePage> {
                         children: [
                           Icon(Icons.summarize, size: 20, color: Colors.blue),
                           SizedBox(width: 8),
-                          Text("LIHAT RINGKASAN", style: TextStyle(fontWeight: FontWeight.bold)),
+                          Text("COMPARE STOCK", style: TextStyle(fontWeight: FontWeight.bold)),
                         ],
                       ),
                       initiallyExpanded: false,
@@ -1754,7 +1754,7 @@ class _CekByCodePageState extends State<CekByCodePage> {
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("COMPARE STOCK", 
+                            const Text("COMPARE STOCK - TOTAL GWS vs NON GWS vs STOCK MASTER", 
                                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                             const SizedBox(height: 8),
                             Row(
