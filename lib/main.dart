@@ -1,13 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await Supabase.initialize(
-    url: 'https://vqhsrrlofnyccjxkgmmn.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxaHNycmxvZm55Y2NqeGtnbW1uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0NzA1MzcsImV4cCI6MjA5MjA0NjUzN30.4OQ_8ZybM6DcwaTd3jMHH5BXv5hbwFtLEESBbFOQ7ag',
-  );
+  try {
+    await Supabase.initialize(
+      url: 'https://vqhsrrlofnyccjxkgmmn.supabase.co',
+      anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxaHNycmxvZm55Y2NqeGtnbW1uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0NzA1MzcsImV4cCI6MjA5MjA0NjUzN30.4OQ_8ZybM6DcwaTd3jMHH5BXv5hbwFtLEESBbFOQ7ag',
+    );
+  } catch (e) {
+    print('Error initializing Supabase: $e');
+    rethrow;
+  }
 
   runApp(const MyApp());
 }
@@ -20,8 +27,59 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Monitoring Stock Tyre',
-      theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+        snackBarTheme: const SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+        ),
+      ),
       home: const HomePage(),
+    );
+  }
+}
+
+// ==============================================
+// UTILITY FUNCTIONS
+// ==============================================
+class Utils {
+  static String formatNumber(int number) {
+    return number.toString().replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (Match m) => '${m[1]},'
+    );
+  }
+
+  static String getFormattedDateTime() {
+    final now = DateTime.now();
+    final days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    final dayName = days[now.weekday % 7];
+    return "$dayName, ${now.day}/${now.month}/${now.year} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
+  }
+
+  static String getDayName() {
+    final now = DateTime.now();
+    final days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    return days[now.weekday % 7];
+  }
+
+  static void showErrorSnackbar(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  static void showSuccessSnackbar(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 }
@@ -226,6 +284,16 @@ class _StockAdminPageState extends State<StockAdminPage> {
   List<Map<String, dynamic>> allData = [];
   bool isLoading = true;
   String? errorMessage;
+  
+  int totalStock = 0;
+  int totalGws = 0;
+  int totalNonGws = 0;
+  String lastUpdate = "";
+  int totalVarian = 0;
+  int variantNotInData = 0;
+  
+  final String adminName = "Ujang Cahyono Nurpiqih";
+  bool isSummaryExpanded = true;
 
   @override
   void initState() {
@@ -246,12 +314,40 @@ class _StockAdminPageState extends State<StockAdminPage> {
         errorMessage = null;
       });
       
-      final response = await Supabase.instance.client
-          .from('stock_master')
-          .select();
+      List<Map<String, dynamic>> allDataList = [];
+      int start = 0;
+      const int batchSize = 1000;
+      bool hasMore = true;
+      
+      while (hasMore) {
+        final response = await Supabase.instance.client
+            .from('stock_master')
+            .select()
+            .range(start, start + batchSize - 1);
+        allDataList.addAll(List<Map<String, dynamic>>.from(response));
+        if (response.length < batchSize) {
+          hasMore = false;
+        } else {
+          start += batchSize;
+        }
+      }
+      
+      totalStock = 0;
+      totalGws = 0;
+      totalNonGws = 0;
+      totalVarian = allDataList.length;
+      
+      for (var item in allDataList) {
+        totalStock += (item['stock'] ?? 0) as int;
+        totalGws += (item['gws'] ?? 0) as int;
+        totalNonGws += (item['non_gws'] ?? 0) as int;
+      }
+      
+      variantNotInData = totalStock - (totalGws + totalNonGws);
+      lastUpdate = Utils.getFormattedDateTime();
       
       setState(() {
-        allData = List<Map<String, dynamic>>.from(response);
+        allData = allDataList;
         isLoading = false;
       });
     } catch (e) {
@@ -266,7 +362,6 @@ class _StockAdminPageState extends State<StockAdminPage> {
     if (searchQuery.isEmpty) {
       return allData;
     }
-    
     final query = searchQuery.toLowerCase().trim();
     return allData.where((item) {
       final code = (item['code'] ?? '').toString().toLowerCase();
@@ -274,11 +369,35 @@ class _StockAdminPageState extends State<StockAdminPage> {
     }).toList();
   }
 
+  List<Map<String, dynamic>> getProblematicVariants() {
+    List<Map<String, dynamic>> problematic = [];
+    for (var item in allData) {
+      int stock = item['stock'] ?? 0;
+      int gws = item['gws'] ?? 0;
+      int nonGws = item['non_gws'] ?? 0;
+      int selisih = stock - (gws + nonGws);
+      if (selisih != 0) {
+        problematic.add({
+          'code': item['code'],
+          'stock': stock,
+          'gws': gws,
+          'non_gws': nonGws,
+          'selisih': selisih,
+          'status': selisih > 0 ? 'KELEBIHAN' : 'KEKURANGAN',
+        });
+      }
+    }
+    problematic.sort((a, b) => (b['selisih'] as int).abs().compareTo((a['selisih'] as int).abs()));
+    return problematic;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text("STOCK ADMIN"),
+        backgroundColor: Colors.green,
+        foregroundColor: Colors.white,
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(70),
           child: Padding(
@@ -306,72 +425,186 @@ class _StockAdminPageState extends State<StockAdminPage> {
           ),
         ),
       ),
-      body: _buildBody(),
+      body: RefreshIndicator(
+        onRefresh: _loadInitialData,
+        child: _buildBody(),
+      ),
     );
   }
 
   Widget _buildBody() {
-    if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
+    if (isLoading) return const Center(child: CircularProgressIndicator());
+    if (errorMessage != null) return Center(child: Text("Error: $errorMessage"));
+    if (allData.isEmpty) return const Center(child: Text("Tidak ada data"));
 
-    if (errorMessage != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            Text("Error: $errorMessage"),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _loadInitialData,
-              child: const Text("Coba Lagi"),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (filteredData.isEmpty) {
-      return const Center(child: Text("Tidak ada data"));
-    }
-
-    return ListView.builder(
-      itemCount: filteredData.length,
-      itemBuilder: (context, index) {
-        final item = filteredData[index];
-        return Card(
-          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    return Column(
+      children: [
+        Card(
+          margin: const EdgeInsets.all(12),
+          elevation: 2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           child: ExpansionTile(
-            title: Text("${item['code']}", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
-            subtitle: Text("Stock: ${item['stock']} | Balance: ${item['balance']}"),
+            leading: Icon(Icons.summarize, color: Colors.blue.shade700, size: 28),
+            title: const Text("RINGKASAN STOCK", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            initiallyExpanded: isSummaryExpanded,
+            onExpansionChanged: (expanded) {
+              setState(() {
+                isSummaryExpanded = expanded;
+              });
+            },
             children: [
               Padding(
-                padding: const EdgeInsets.all(16.0),
+                padding: const EdgeInsets.all(16),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _rowInfo("GWS", item['gws']),
-                    _rowInfo("NON GWS", item['non_gws']),
-                    _rowInfo("STOCK", item['stock']),
-                    const Divider(),
-                    _rowInfo("BALANCE", item['balance'], isBold: true, color: Colors.red),
-                    const SizedBox(height: 8),
-                    _rowInfo("Wait Loading", item['wait_loading']),
-                    _rowInfo("End Loading", item['end_loading']),
-                    _rowInfo("Transport End", item['transport_end']),
-                    if (item['noted'] != null && item['noted'].toString().isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8.0),
-                        child: Text("📝 ${item['noted']}", style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.grey)),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.shade50,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.blue.shade200),
                       ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(children: [Icon(Icons.person, size: 16, color: Colors.blue.shade700), const SizedBox(width: 8), Text("Update Stock by: $adminName", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blue.shade700))]),
+                          const SizedBox(height: 8),
+                          Row(children: [Icon(Icons.update, size: 16, color: Colors.grey.shade600), const SizedBox(width: 8), Text("Update Terakhir: $lastUpdate", style: TextStyle(fontSize: 12, color: Colors.grey.shade600))]),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(12)),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text("ENDING STOCK", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Text("${Utils.formatNumber(totalStock)} PCS", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.blue)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(12)),
+                            child: Column(
+                              children: [
+                                const Text("GWS", style: TextStyle(fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 4),
+                                Text("${Utils.formatNumber(totalGws)} PCS", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.orange)),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(color: Colors.green.shade50, borderRadius: BorderRadius.circular(12)),
+                            child: Column(
+                              children: [
+                                const Text("NON GWS", style: TextStyle(fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 4),
+                                Text("${Utils.formatNumber(totalNonGws)} PCS", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    GestureDetector(
+                      onTap: () {
+                        if (variantNotInData != 0) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => DetailVarianPage(
+                                problematicVariants: getProblematicVariants(),
+                                totalStock: totalStock,
+                                totalGws: totalGws,
+                                totalNonGws: totalNonGws,
+                                variantNotInData: variantNotInData,
+                              ),
+                            ),
+                          );
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: variantNotInData != 0 ? Colors.red.shade50 : Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(variantNotInData != 0 ? Icons.warning : Icons.check_circle, color: variantNotInData != 0 ? Colors.red : Colors.green, size: 20),
+                                const SizedBox(width: 8),
+                                Text("VARIAN TIDAK ADA DI DATA", style: TextStyle(fontWeight: FontWeight.bold, color: variantNotInData != 0 ? Colors.red : Colors.green)),
+                                if (variantNotInData != 0) const Icon(Icons.chevron_right, size: 20, color: Colors.red),
+                              ],
+                            ),
+                            Text(variantNotInData != 0 ? "${Utils.formatNumber(variantNotInData)} PCS" : "0 PCS", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: variantNotInData != 0 ? Colors.red : Colors.green)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text("Total Varian: ${Utils.formatNumber(totalVarian)} item", style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
                   ],
                 ),
               ),
             ],
           ),
-        );
-      },
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: filteredData.length,
+            itemBuilder: (context, index) {
+              final item = filteredData[index];
+              return Card(
+                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: ExpansionTile(
+                  title: Text("${item['code']}", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue)),
+                  subtitle: Text("Stock: ${item['stock']} | Balance: ${item['balance']}"),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        children: [
+                          _rowInfo("GWS", item['gws']),
+                          _rowInfo("NON GWS", item['non_gws']),
+                          _rowInfo("STOCK", item['stock']),
+                          const Divider(),
+                          _rowInfo("BALANCE", item['balance'], isBold: true, color: Colors.red),
+                          const SizedBox(height: 8),
+                          _rowInfo("Wait Loading", item['wait_loading']),
+                          _rowInfo("End Loading", item['end_loading']),
+                          _rowInfo("Transport End", item['transport_end']),
+                          if (item['noted'] != null && item['noted'].toString().isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8.0),
+                              child: Text("📝 ${item['noted']}", style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.grey)),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -387,7 +620,235 @@ class _StockAdminPageState extends State<StockAdminPage> {
 }
 
 // ==============================================
-// NON GWS TABLE PAGE
+// DETAIL VARIAN PAGE
+// ==============================================
+class DetailVarianPage extends StatelessWidget {
+  final List<Map<String, dynamic>> problematicVariants;
+  final int totalStock;
+  final int totalGws;
+  final int totalNonGws;
+  final int variantNotInData;
+
+  const DetailVarianPage({
+    super.key,
+    required this.problematicVariants,
+    required this.totalStock,
+    required this.totalGws,
+    required this.totalNonGws,
+    required this.variantNotInData,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    int totalKelebihan = problematicVariants
+        .where((v) => v['selisih'] > 0)
+        .fold(0, (sum, v) => sum + (v['selisih'] as int));
+    int totalKekurangan = problematicVariants
+        .where((v) => v['selisih'] < 0)
+        .fold(0, (sum, v) => sum + (v['selisih'] as int).abs());
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("DETAIL VARIAN BERMASALAH"),
+        backgroundColor: Colors.red,
+        foregroundColor: Colors.white,
+      ),
+      body: Column(
+        children: [
+          Container(
+            color: Colors.red.shade50,
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("TOTAL SELISIH", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text("${Utils.formatNumber(variantNotInData)} PCS", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.red)),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(8)),
+                        child: Column(
+                          children: [
+                            const Text("KELEBIHAN", style: TextStyle(fontWeight: FontWeight.bold)),
+                            Text("${Utils.formatNumber(totalKelebihan)} PCS", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(color: Colors.orange.shade100, borderRadius: BorderRadius.circular(8)),
+                        child: Column(
+                          children: [
+                            const Text("KEKURANGAN", style: TextStyle(fontWeight: FontWeight.bold)),
+                            Text("${Utils.formatNumber(totalKekurangan)} PCS", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.orange)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text("Total ${problematicVariants.length} code bermasalah", style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+              ],
+            ),
+          ),
+          Container(
+            color: Colors.red.shade700,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+            child: Row(
+              children: [
+                _buildHeaderCell("No", flex: 1),
+                _buildHeaderCell("CODE", flex: 2),
+                _buildHeaderCell("STOCK", flex: 2),
+                _buildHeaderCell("GWS", flex: 2),
+                _buildHeaderCell("NON GWS", flex: 2),
+                _buildHeaderCell("SELISIH", flex: 2),
+                _buildHeaderCell("STATUS", flex: 2),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: problematicVariants.length,
+              itemBuilder: (context, index) {
+                final item = problematicVariants[index];
+                final bool isEven = index % 2 == 0;
+                final bool isKelebihan = item['selisih'] > 0;
+                return Container(
+                  color: isEven ? Colors.grey.shade50 : Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                  child: Row(
+                    children: [
+                      _buildCell("${index + 1}", flex: 1),
+                      _buildCell(item['code'].toString().toUpperCase(), flex: 2, fontWeight: FontWeight.bold),
+                      _buildCell("${item['stock']}", flex: 2),
+                      _buildCell("${item['gws']}", flex: 2),
+                      _buildCell("${item['non_gws']}", flex: 2),
+                      _buildCell("${item['selisih'] > 0 ? '+' : ''}${item['selisih']}", flex: 2, fontWeight: FontWeight.bold, color: isKelebihan ? Colors.red : Colors.orange),
+                      _buildCell(item['status'], flex: 2, fontWeight: FontWeight.bold, color: isKelebihan ? Colors.red : Colors.orange),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeaderCell(String text, {int flex = 1}) {
+    return Expanded(flex: flex, child: Text(text, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13), textAlign: TextAlign.center));
+  }
+
+  Widget _buildCell(String text, {int flex = 1, FontWeight fontWeight = FontWeight.normal, Color color = Colors.black87, double fontSize = 13}) {
+    return Expanded(flex: flex, child: Text(text, style: TextStyle(color: color, fontWeight: fontWeight, fontSize: fontSize), textAlign: TextAlign.center, overflow: TextOverflow.ellipsis));
+  }
+}
+
+// ==============================================
+// DETAIL BY YEAR PAGE
+// ==============================================
+class DetailByYearPage extends StatelessWidget {
+  final int year;
+  final List<Map<String, dynamic>> data;
+  final int totalQty;
+
+  const DetailByYearPage({
+    super.key,
+    required this.year,
+    required this.data,
+    required this.totalQty,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("DETAIL TAHUN $year"),
+        backgroundColor: Colors.orange,
+        foregroundColor: Colors.white,
+      ),
+      body: Column(
+        children: [
+          Container(
+            color: Colors.orange.shade50,
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text("TAHUN $year", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.orange)),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(color: Colors.orange.shade100, borderRadius: BorderRadius.circular(20)),
+                  child: Text("TOTAL: $totalQty PCS", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            color: Colors.orange.shade700,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+            child: Row(
+              children: [
+                _buildHeaderCell("No", flex: 1),
+                _buildHeaderCell("CODE", flex: 2),
+                _buildHeaderCell("LOKASI", flex: 3),
+                _buildHeaderCell("WEEKLY", flex: 2),
+                _buildHeaderCell("QTY", flex: 1),
+                _buildHeaderCell("STATUS", flex: 2),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: data.length,
+              itemBuilder: (context, index) {
+                final item = data[index];
+                final bool isEven = index % 2 == 0;
+                return Container(
+                  color: isEven ? Colors.grey.shade50 : Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                  child: Row(
+                    children: [
+                      _buildCell("${index + 1}", flex: 1),
+                      _buildCell((item['code'] ?? '-').toString().toUpperCase(), flex: 2, fontWeight: FontWeight.bold),
+                      _buildCell((item['lokasi'] ?? '-').toString().toUpperCase(), flex: 3, fontSize: 11),
+                      _buildCell(item['weekly'] ?? '-', flex: 2),
+                      _buildCell("${item['qty'] ?? 0}", flex: 1, fontWeight: FontWeight.bold, color: Colors.red),
+                      _buildCell((item['status'] ?? '-').toString().toUpperCase(), flex: 2, fontSize: 11),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeaderCell(String text, {int flex = 1}) {
+    return Expanded(flex: flex, child: Text(text, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13), textAlign: TextAlign.center));
+  }
+
+  Widget _buildCell(String text, {int flex = 1, FontWeight fontWeight = FontWeight.normal, Color color = Colors.black87, double fontSize = 13}) {
+    return Expanded(flex: flex, child: Text(text, style: TextStyle(color: color, fontWeight: fontWeight, fontSize: fontSize), textAlign: TextAlign.center, overflow: TextOverflow.ellipsis));
+  }
+}
+
+// ==============================================
+// NON GWS TABLE PAGE (DENGAN FORM SEDERHANA)
 // ==============================================
 class NonGwsTablePage extends StatefulWidget {
   const NonGwsTablePage({super.key});
@@ -405,6 +866,13 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
   bool isLoading = true;
   String? errorMessage;
 
+  // Controller untuk form (disederhanakan)
+  final _codeController = TextEditingController();
+  final _qtyController = TextEditingController();
+  final _lokasiController = TextEditingController();
+  final _weeklyController = TextEditingController();
+  final _notedController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -414,6 +882,11 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
   @override
   void dispose() {
     _searchController.dispose();
+    _codeController.dispose();
+    _qtyController.dispose();
+    _lokasiController.dispose();
+    _weeklyController.dispose();
+    _notedController.dispose();
     super.dispose();
   }
 
@@ -424,12 +897,26 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
         errorMessage = null;
       });
       
-      final response = await Supabase.instance.client
-          .from('inventory_non_gws')
-          .select()
-          .order('weekly', ascending: false);
+      List<Map<String, dynamic>> allDataList = [];
+      int start = 0;
+      const int batchSize = 1000;
+      bool hasMore = true;
       
-      final normalizedData = response.map((item) {
+      while (hasMore) {
+        final response = await Supabase.instance.client
+            .from('inventory_non_gws')
+            .select()
+            .order('weekly', ascending: false)
+            .range(start, start + batchSize - 1);
+        allDataList.addAll(List<Map<String, dynamic>>.from(response));
+        if (response.length < batchSize) {
+          hasMore = false;
+        } else {
+          start += batchSize;
+        }
+      }
+      
+      final normalizedData = allDataList.map((item) {
         return {
           ...item,
           'code': (item['code'] ?? '').toString().toLowerCase(),
@@ -453,13 +940,10 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
     if (!hasSearched || searchQuery.isEmpty) {
       return [];
     }
-    
     final query = searchQuery.toLowerCase().trim();
-    
     return allData.where((item) {
       final code = (item['code'] ?? '').toString();
       final lokasi = (item['lokasi'] ?? '').toString();
-      
       return code.contains(query) || lokasi.contains(query);
     }).toList();
   }
@@ -506,8 +990,7 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
       return;
     }
     
-    String csvContent = "No,Code,Lokasi,Weekly,Qty,Status,Noted,Checked By,Date Time\n";
-    
+    String csvContent = "No,Code,Lokasi,Weekly,Qty,Noted,Date Time\n";
     for (int i = 0; i < allData.length; i++) {
       var item = allData[i];
       csvContent += "${i + 1},"
@@ -515,87 +998,30 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
           "\"${item['lokasi'] ?? ''}\","
           "\"${item['weekly'] ?? ''}\","
           "${item['qty'] ?? 0},"
-          "\"${item['status'] ?? ''}\","
           "\"${item['noted'] ?? ''}\","
-          "\"${item['checked_by'] ?? ''}\","
           "\"${item['date_time'] ?? ''}\"\n";
     }
     
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.download, color: Colors.green),
-            SizedBox(width: 8),
-            Text("Export CSV"),
-          ],
-        ),
+        title: const Row(children: [Icon(Icons.download, color: Colors.green), SizedBox(width: 8), Text("Export CSV")]),
         content: SizedBox(
           width: double.maxFinite,
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                color: Colors.green.shade50,
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle, color: Colors.green, size: 20),
-                    const SizedBox(width: 8),
-                    Text("${allData.length} baris data siap di-copy"),
-                  ],
-                ),
-              ),
+              Container(padding: const EdgeInsets.all(8), color: Colors.green.shade50, child: Row(children: [const Icon(Icons.check_circle, color: Colors.green, size: 20), const SizedBox(width: 8), Text("${allData.length} baris data siap di-copy")])),
               const SizedBox(height: 12),
               const Text("Copy teks CSV di bawah ini, lalu paste ke Excel:", style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              Container(
-                height: 300,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade400),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SingleChildScrollView(
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: SelectableText(
-                        csvContent,
-                        style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              Container(height: 300, decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade400), borderRadius: BorderRadius.circular(8)), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: SingleChildScrollView(child: Padding(padding: const EdgeInsets.all(8.0), child: SelectableText(csvContent, style: const TextStyle(fontSize: 10, fontFamily: 'monospace')))))),
               const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(8),
-                color: Colors.blue.shade50,
-                child: const Row(
-                  children: [
-                    Icon(Icons.info_outline, size: 16, color: Colors.blue),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        "Tips: Select All (Ctrl+A) lalu Copy (Ctrl+C), paste ke Excel",
-                        style: TextStyle(fontSize: 11),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              Container(padding: const EdgeInsets.all(8), color: Colors.blue.shade50, child: const Row(children: [Icon(Icons.info_outline, size: 16, color: Colors.blue), SizedBox(width: 8), Expanded(child: Text("Tips: Select All (Ctrl+A) lalu Copy (Ctrl+C), paste ke Excel", style: TextStyle(fontSize: 11)))])),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Tutup"),
-          ),
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Tutup"))],
       ),
     );
   }
@@ -604,14 +1030,10 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("DATA NON GWS (TABEL)"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: _exportToCSV,
-            tooltip: "Export CSV",
-          ),
-        ],
+        title: const Text("DATA NON GWS"),
+        backgroundColor: Colors.orange,
+        foregroundColor: Colors.white,
+        actions: [IconButton(icon: const Icon(Icons.download), onPressed: _exportToCSV, tooltip: "Export CSV")],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(70),
           child: Padding(
@@ -629,59 +1051,25 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
                         icon: const Icon(Icons.clear),
                         onPressed: () {
                           _searchController.clear();
-                          setState(() {
-                            searchQuery = "";
-                            hasSearched = false;
-                          });
+                          setState(() { searchQuery = ""; hasSearched = false; });
                         },
                       )
                     : null,
               ),
-              onChanged: (value) {
-                setState(() {
-                  searchQuery = value.toLowerCase().trim();
-                  hasSearched = value.isNotEmpty;
-                });
-              },
+              onChanged: (value) { setState(() { searchQuery = value.toLowerCase().trim(); hasSearched = value.isNotEmpty; }); },
             ),
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showAddDialog,
-        backgroundColor: Colors.orange,
-        child: const Icon(Icons.add, color: Colors.white),
-      ),
+      floatingActionButton: FloatingActionButton(onPressed: _showAddDialog, backgroundColor: Colors.orange, child: const Icon(Icons.add, color: Colors.white)),
       body: _buildBody(),
     );
   }
 
   Widget _buildBody() {
-    if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (errorMessage != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            Text("Error: $errorMessage"),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _loadInitialData,
-              child: const Text("Coba Lagi"),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (allData.isEmpty) {
-      return const Center(child: Text("Tidak ada data"));
-    }
+    if (isLoading) return const Center(child: CircularProgressIndicator());
+    if (errorMessage != null) return Center(child: Text("Error: $errorMessage"));
+    if (allData.isEmpty) return const Center(child: Text("Tidak ada data"));
 
     var summary = getSummaryByYear();
     int totalAll = summary.values.fold(0, (sum, qty) => sum + qty);
@@ -701,13 +1089,7 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.summarize, color: Colors.orange, size: 28),
-                          SizedBox(width: 10),
-                          Text("RINGKASAN DATA NON GWS", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
+                      const Row(children: [Icon(Icons.summarize, color: Colors.orange, size: 28), SizedBox(width: 10), Text("RINGKASAN DATA NON GWS", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))]),
                       const Divider(height: 24),
                       Text("📅 Update Terakhir: $lastUpdate", style: const TextStyle(fontSize: 12, color: Colors.grey)),
                       const SizedBox(height: 16),
@@ -718,19 +1100,28 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
                           int year = entry.key;
                           int qty = entry.value;
                           if (year == 0) return const SizedBox.shrink();
-                          return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            decoration: BoxDecoration(
-                              color: year == 2025 ? Colors.blue.shade50 : Colors.green.shade50,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: year == 2025 ? Colors.blue.shade200 : Colors.green.shade200),
-                            ),
-                            child: Column(
-                              children: [
-                                Text("TAHUN $year", style: TextStyle(fontWeight: FontWeight.bold, color: year == 2025 ? Colors.blue.shade700 : Colors.green.shade700)),
-                                const SizedBox(height: 4),
-                                Text("$qty PCS", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: year == 2025 ? Colors.blue.shade900 : Colors.green.shade900)),
-                              ],
+                          List<Map<String, dynamic>> yearData = allData.where((item) {
+                            int itemYear = _extractYearFromWeekly(item['weekly'] ?? '');
+                            return itemYear == year;
+                          }).toList();
+                          return GestureDetector(
+                            onTap: () {
+                              Navigator.push(context, MaterialPageRoute(builder: (context) => DetailByYearPage(year: year, data: yearData, totalQty: qty)));
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              decoration: BoxDecoration(
+                                color: year == 2025 ? Colors.blue.shade50 : Colors.green.shade50,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: year == 2025 ? Colors.blue.shade200 : Colors.green.shade200),
+                              ),
+                              child: Column(
+                                children: [
+                                  Text("TAHUN $year", style: TextStyle(fontWeight: FontWeight.bold, color: year == 2025 ? Colors.blue.shade700 : Colors.green.shade700)),
+                                  const SizedBox(height: 4),
+                                  Text("$qty PCS", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: year == 2025 ? Colors.blue.shade900 : Colors.green.shade900)),
+                                ],
+                              ),
                             ),
                           );
                         }).toList(),
@@ -741,10 +1132,7 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
                         decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(12)),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text("TOTAL SEMUA", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                            Text("$totalAll PCS", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.red)),
-                          ],
+                          children: [const Text("TOTAL SEMUA", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)), Text("$totalAll PCS", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Colors.red))],
                         ),
                       ),
                       const SizedBox(height: 20),
@@ -754,12 +1142,7 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
                           onPressed: () => setState(() => hasSearched = true),
                           icon: const Icon(Icons.search),
                           label: const Text("MULAI PENCARIAN"),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.orange,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          ),
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
                         ),
                       ),
                     ],
@@ -796,17 +1179,7 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
             const SizedBox(height: 16),
             const Text("Tidak ditemukan"),
             const SizedBox(height: 16),
-            TextButton.icon(
-              onPressed: () {
-                _searchController.clear();
-                setState(() {
-                  searchQuery = "";
-                  hasSearched = false;
-                });
-              },
-              icon: const Icon(Icons.arrow_back),
-              label: const Text("Kembali ke Ringkasan"),
-            ),
+            TextButton.icon(onPressed: () { _searchController.clear(); setState(() { searchQuery = ""; hasSearched = false; }); }, icon: const Icon(Icons.arrow_back), label: const Text("Kembali ke Ringkasan")),
           ],
         ),
       );
@@ -815,7 +1188,7 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
     return Column(
       children: [
         Container(color: Colors.orange.shade50, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("🔍 Hasil: \"${_searchController.text}\""), Text("${filteredData.length} baris")])),
-        Container(color: Colors.orange.shade700, padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12), child: Row(children: [_buildHeaderCell("No", flex: 1), _buildHeaderCell("CODE", flex: 2), _buildHeaderCell("LOKASI", flex: 2), _buildHeaderCell("WEEKLY", flex: 2), _buildHeaderCell("QTY", flex: 1), _buildHeaderCell("STATUS", flex: 2)])),
+        Container(color: Colors.orange.shade700, padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12), child: Row(children: [_buildHeaderCell("No", flex: 1), _buildHeaderCell("CODE", flex: 2), _buildHeaderCell("LOKASI", flex: 2), _buildHeaderCell("WEEKLY", flex: 2), _buildHeaderCell("QTY", flex: 1)])),
         Expanded(
           child: ListView.builder(
             itemCount: filteredData.length + 1,
@@ -835,7 +1208,6 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
                     _buildCell((item['lokasi'] ?? "-").toString().toUpperCase(), flex: 2),
                     _buildCell(item['weekly'] ?? "-", flex: 2),
                     _buildCell("${item['qty'] ?? 0}", flex: 1, fontWeight: FontWeight.bold),
-                    _buildCell((item['status'] ?? "-").toString().toUpperCase(), flex: 2, fontSize: 11),
                   ]),
                 ),
               );
@@ -873,23 +1245,12 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
     );
   }
 
-  final _formKey = GlobalKey<FormState>();
-  final _codeController = TextEditingController();
-  final _qtyController = TextEditingController();
-  final _lokasiController = TextEditingController();
-  final _weeklyController = TextEditingController();
-  final _notedController = TextEditingController();
-  final _checkedByController = TextEditingController();
-  final _statusController = TextEditingController();
-
   void _clearControllers() { 
     _codeController.clear(); 
     _qtyController.clear(); 
     _lokasiController.clear(); 
     _weeklyController.clear(); 
     _notedController.clear(); 
-    _checkedByController.clear(); 
-    _statusController.clear(); 
   }
   
   void _showAddDialog() { 
@@ -903,142 +1264,259 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
     _lokasiController.text = item['lokasi']?.toString() ?? ""; 
     _weeklyController.text = item['weekly']?.toString() ?? ""; 
     _notedController.text = item['noted']?.toString() ?? ""; 
-    _checkedByController.text = item['checked_by']?.toString() ?? ""; 
-    _statusController.text = item['status']?.toString() ?? ""; 
     _showFormDialog(isEdit: true, uniqId: uniqId); 
   }
   
   void _showFormDialog({required bool isEdit, String? uniqId}) {
-    if (!isEdit) {
-      _statusController.text = "OKE CEK";
-    }
+    int qtyValue = int.tryParse(_qtyController.text) ?? 0;
     
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) {
-          return AlertDialog(
-            title: Text(isEdit ? "✏️ Edit Data" : "➕ Tambah Data"),
-            content: SingleChildScrollView(
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Autocomplete<String>(
-                      optionsBuilder: (TextEditingValue textEditingValue) {
-                        if (textEditingValue.text.isEmpty) {
-                          return const Iterable<String>.empty();
-                        }
-                        List<String> uniqueCodes = allData
-                            .map((e) => (e['code'] ?? '').toString().toUpperCase())
-                            .toSet()
-                            .toList();
-                        return uniqueCodes.where((option) =>
-                            option.toLowerCase().contains(textEditingValue.text.toLowerCase()));
-                      },
-                      onSelected: (selection) {
-                        _codeController.text = selection;
-                      },
-                      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-                        _codeController.addListener(() {
-                          setStateDialog(() {});
-                        });
-                        return TextFormField(
-                          controller: _codeController,
-                          focusNode: focusNode,
-                          decoration: const InputDecoration(
-                            labelText: "Code",
-                            border: OutlineInputBorder(),
-                            hintText: "Ketik untuk mencari...",
+          return Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Icon(isEdit ? Icons.edit : Icons.add_circle, color: Colors.orange, size: 28),
+                      const SizedBox(width: 10),
+                      Text(isEdit ? "Edit Data" : "Tambah Data Baru", style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // CODE
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("CODE", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            const SizedBox(height: 4),
+                            if (!isEdit)
+                              Autocomplete<String>(
+                                optionsBuilder: (TextEditingValue textEditingValue) {
+                                  if (textEditingValue.text.isEmpty) return const Iterable<String>.empty();
+                                  List<String> uniqueCodes = allData.map((e) => (e['code'] ?? '').toString().toUpperCase()).toSet().toList();
+                                  return uniqueCodes.where((option) => option.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+                                },
+                                onSelected: (selection) { _codeController.text = selection; setStateDialog(() {}); },
+                                fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                                  _codeController.addListener(() { setStateDialog(() {}); });
+                                  return TextFormField(
+                                    controller: _codeController,
+                                    focusNode: focusNode,
+                                    decoration: InputDecoration(
+                                      hintText: "Ketik Code...",
+                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                      filled: true,
+                                      fillColor: Colors.grey.shade50,
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                      suffixIcon: _codeController.text.isNotEmpty
+                                          ? IconButton(icon: const Icon(Icons.clear, size: 18), onPressed: () { _codeController.clear(); setStateDialog(() {}); })
+                                          : null,
+                                    ),
+                                    enabled: !isEdit,
+                                    style: const TextStyle(fontSize: 16),
+                                  );
+                                },
+                              )
+                            else
+                              TextFormField(
+                                controller: _codeController,
+                                enabled: false,
+                                decoration: InputDecoration(
+                                  hintText: "Code",
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                  filled: true,
+                                  fillColor: Colors.grey.shade100,
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                ),
+                                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        
+                        // QTY dengan tombol + dan -
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("QTY", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: _qtyController,
+                                    decoration: InputDecoration(
+                                      hintText: "0",
+                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                      filled: true,
+                                      fillColor: Colors.grey.shade50,
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                    onChanged: (value) { setStateDialog(() { qtyValue = int.tryParse(value) ?? 0; }); },
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: () {
+                                    int current = int.tryParse(_qtyController.text) ?? 0;
+                                    if (current > 0) {
+                                      _qtyController.text = (current - 1).toString();
+                                      setStateDialog(() { qtyValue = current - 1; });
+                                    }
+                                  },
+                                  child: Container(
+                                    width: 48, height: 48,
+                                    decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(12)),
+                                    child: const Icon(Icons.remove, color: Colors.red, size: 28),
+                                  ),
+                                ),
+                                InkWell(
+                                  onTap: () {
+                                    int current = int.tryParse(_qtyController.text) ?? 0;
+                                    _qtyController.text = (current + 1).toString();
+                                    setStateDialog(() { qtyValue = current + 1; });
+                                  },
+                                  child: Container(
+                                    width: 48, height: 48,
+                                    decoration: BoxDecoration(color: Colors.green.shade100, borderRadius: BorderRadius.circular(12)),
+                                    child: const Icon(Icons.add, color: Colors.green, size: 28),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        
+                        // LOKASI
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("LOKASI", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            const SizedBox(height: 4),
+                            Autocomplete<String>(
+                              optionsBuilder: (TextEditingValue textEditingValue) {
+                                if (textEditingValue.text.isEmpty) return const Iterable<String>.empty();
+                                List<String> uniqueLokasi = allData.map((e) => (e['lokasi'] ?? '').toString().toUpperCase()).toSet().toList();
+                                return uniqueLokasi.where((option) => option.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+                              },
+                              onSelected: (selection) { _lokasiController.text = selection; setStateDialog(() {}); },
+                              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                                _lokasiController.addListener(() { setStateDialog(() {}); });
+                                return TextFormField(
+                                  controller: _lokasiController,
+                                  focusNode: focusNode,
+                                  decoration: InputDecoration(
+                                    hintText: "Ketik Lokasi...",
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                    filled: true,
+                                    fillColor: Colors.grey.shade50,
+                                    contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                    suffixIcon: _lokasiController.text.isNotEmpty
+                                        ? IconButton(icon: const Icon(Icons.clear, size: 18), onPressed: () { _lokasiController.clear(); setStateDialog(() {}); })
+                                        : null,
+                                  ),
+                                  style: const TextStyle(fontSize: 16),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        
+                        // WEEKLY
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("WEEKLY", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            const SizedBox(height: 4),
+                            TextFormField(
+                              controller: _weeklyController,
+                              decoration: InputDecoration(
+                                hintText: "Contoh: 1526",
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                filled: true,
+                                fillColor: Colors.grey.shade50,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              ),
+                              style: const TextStyle(fontSize: 16),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        
+                        // NOTED (opsional)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("NOTED", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            const Text("(Opsional)", style: TextStyle(fontSize: 11, color: Colors.grey)),
+                            const SizedBox(height: 4),
+                            TextFormField(
+                              controller: _notedController,
+                              decoration: InputDecoration(
+                                hintText: "Catatan...",
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                filled: true,
+                                fillColor: Colors.grey.shade50,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              ),
+                              maxLines: 2,
+                              style: const TextStyle(fontSize: 16),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  
+                  // Tombol SIMPAN dan BATAL
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            backgroundColor: Colors.grey.shade100,
                           ),
-                          enabled: !isEdit,
-                          validator: (value) => value?.isEmpty ?? true ? "Code harus diisi" : null,
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 10),
-                    TextFormField(
-                      controller: _qtyController,
-                      decoration: const InputDecoration(labelText: "Qty", border: OutlineInputBorder()),
-                      keyboardType: TextInputType.number,
-                      validator: (value) => value?.isEmpty ?? true ? "Qty harus diisi" : null,
-                    ),
-                    const SizedBox(height: 10),
-                    Autocomplete<String>(
-                      optionsBuilder: (TextEditingValue textEditingValue) {
-                        if (textEditingValue.text.isEmpty) {
-                          return const Iterable<String>.empty();
-                        }
-                        List<String> uniqueLokasi = allData
-                            .map((e) => (e['lokasi'] ?? '').toString().toUpperCase())
-                            .toSet()
-                            .toList();
-                        return uniqueLokasi.where((option) =>
-                            option.toLowerCase().contains(textEditingValue.text.toLowerCase()));
-                      },
-                      onSelected: (selection) {
-                        _lokasiController.text = selection;
-                      },
-                      fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
-                        _lokasiController.addListener(() {
-                          setStateDialog(() {});
-                        });
-                        return TextFormField(
-                          controller: _lokasiController,
-                          focusNode: focusNode,
-                          decoration: const InputDecoration(
-                            labelText: "Lokasi",
-                            border: OutlineInputBorder(),
-                            hintText: "Ketik untuk mencari...",
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 10),
-                    TextFormField(
-                      controller: _weeklyController,
-                      decoration: const InputDecoration(labelText: "Weekly", border: OutlineInputBorder()),
-                    ),
-                    const SizedBox(height: 10),
-                    TextFormField(
-                      controller: _notedController,
-                      decoration: const InputDecoration(labelText: "Noted", border: OutlineInputBorder()),
-                    ),
-                    const SizedBox(height: 10),
-                    TextFormField(
-                      controller: _checkedByController,
-                      decoration: const InputDecoration(labelText: "Checked By", border: OutlineInputBorder()),
-                    ),
-                    const SizedBox(height: 10),
-                    TextFormField(
-                      controller: _statusController,
-                      decoration: const InputDecoration(
-                        labelText: "Status",
-                        border: OutlineInputBorder(),
-                        hintText: "OKE CEK",
+                          child: const Text("BATAL", style: TextStyle(fontSize: 16, color: Colors.grey)),
+                        ),
                       ),
-                      enabled: false,
-                    ),
-                  ],
-                ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: () async { 
+                            await _saveData(isEdit: isEdit, uniqId: uniqId); 
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: Text(isEdit ? "UPDATE" : "SIMPAN", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text("Batal", style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  if (_formKey.currentState?.validate() ?? false) {
-                    await _saveData(isEdit: isEdit, uniqId: uniqId);
-                  }
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                child: Text(isEdit ? "Update" : "Simpan"),
-              ),
-            ],
           );
         },
       ),
@@ -1048,84 +1526,59 @@ class _NonGwsTablePageState extends State<NonGwsTablePage> {
   Future<void> _saveData({required bool isEdit, String? uniqId}) async {
     final table = Supabase.instance.client.from('inventory_non_gws');
     final code = _codeController.text.trim().toUpperCase();
-
+    
     Map<String, dynamic> data = {
       "code": code,
       "qty": int.tryParse(_qtyController.text) ?? 0,
       "lokasi": _lokasiController.text.trim().toUpperCase(),
       "weekly": _weeklyController.text.trim(),
       "noted": _notedController.text.trim(),
-      "checked_by": _checkedByController.text.trim(),
-      "status": _statusController.text.trim(),
       "date_time": DateTime.now().toString(),
     };
-
+    
     try {
-      if (isEdit && uniqId != null) {
-        await table.update(data).eq('uniq_id', uniqId);
+      if (isEdit && uniqId != null) { 
+        await table.update(data).eq('uniq_id', uniqId); 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("✅ Data berhasil diupdate"), backgroundColor: Colors.green),
+            const SnackBar(content: Text("✅ Data berhasil diupdate"), backgroundColor: Colors.green)
           );
         }
-      } else {
-        data['uniq_id'] = 'UID-${DateTime.now().millisecondsSinceEpoch}';
-        await table.insert(data);
+      } else { 
+        data['uniq_id'] = 'UID-${DateTime.now().millisecondsSinceEpoch}'; 
+        await table.insert(data); 
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("✅ Data berhasil ditambahkan"), backgroundColor: Colors.green),
+            const SnackBar(content: Text("✅ Data berhasil ditambahkan"), backgroundColor: Colors.green)
           );
         }
       }
-      if (mounted) {
-        Navigator.pop(context);
-        _loadInitialData();
+      if (mounted) { 
+        Navigator.pop(context); 
+        _loadInitialData(); 
       }
-    } catch (e) {
+    } catch (e) { 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("❌ Error: $e"), backgroundColor: Colors.red),
+          SnackBar(content: Text("❌ Error: $e"), backgroundColor: Colors.red)
         );
       }
     }
   }
 
   Future<void> _confirmDelete(String uniqId, String code) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Hapus Data?"),
-        content: Text("Apakah Anda yakin ingin menghapus data dengan Code: ${code.toUpperCase()}?"),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Batal")),
-          TextButton(onPressed: () => Navigator.pop(context, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text("Hapus")),
-        ],
-      ),
-    );
+    final confirm = await showDialog<bool>(context: context, builder: (context) => AlertDialog(title: const Text("Hapus Data?"), content: Text("Apakah Anda yakin ingin menghapus data dengan Code: ${code.toUpperCase()}?"), actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Batal")), TextButton(onPressed: () => Navigator.pop(context, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text("Hapus"))]));
     if (confirm == true) await _deleteData(uniqId);
   }
 
   Future<void> _deleteData(String uniqId) async {
-    try {
-      await Supabase.instance.client.from('inventory_non_gws').delete().eq('uniq_id', uniqId);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("🗑️ Data berhasil dihapus"), backgroundColor: Colors.orange),
-        );
-        _loadInitialData();
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("❌ Error: $e"), backgroundColor: Colors.red),
-        );
-      }
-    }
+    try { await Supabase.instance.client.from('inventory_non_gws').delete().eq('uniq_id', uniqId); if (mounted) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("🗑️ Data berhasil dihapus"), backgroundColor: Colors.orange)); _loadInitialData(); } }
+    catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("❌ Error: $e"), backgroundColor: Colors.red)); }
   }
 }
 
 // ==============================================
-// CEK BY CODE PAGE - TAMPILAN LIST DENGAN SUBTITLE
+// CEK BY CODE PAGE (DENGAN UNIQUE ID FIX)
 // ==============================================
 class CekByCodePage extends StatefulWidget {
   const CekByCodePage({super.key});
@@ -1163,11 +1616,9 @@ class _CekByCodePageState extends State<CekByCodePage> {
 
   Future<void> _loadCheckedItems() async {
     try {
-      final response = await Supabase.instance.client
-          .from('cek_oke_status')
-          .select();
-      for (var item in response) {
-        checkedItems.add(item['id'].toString());
+      final response = await Supabase.instance.client.from('cek_oke_status').select();
+      for (var item in response) { 
+        checkedItems.add(item['id'].toString()); 
       }
       setState(() {});
     } catch (e) {
@@ -1177,11 +1628,9 @@ class _CekByCodePageState extends State<CekByCodePage> {
 
   Future<void> _loadNotes() async {
     try {
-      final response = await Supabase.instance.client
-          .from('cek_oke_notes')
-          .select();
-      for (var item in response) {
-        notes[item['id'].toString()] = item['note'].toString();
+      final response = await Supabase.instance.client.from('cek_oke_notes').select();
+      for (var item in response) { 
+        notes[item['id'].toString()] = item['note'].toString(); 
       }
       setState(() {});
     } catch (e) {
@@ -1191,133 +1640,118 @@ class _CekByCodePageState extends State<CekByCodePage> {
 
   Future<void> _saveCheckedStatus(String itemId, bool isChecked) async {
     try {
-      if (isChecked) {
-        await Supabase.instance.client
-            .from('cek_oke_status')
-            .upsert({'id': itemId, 'status': 'OKE'});
-        checkedItems.add(itemId);
-      } else {
-        await Supabase.instance.client
-            .from('cek_oke_status')
-            .delete()
-            .eq('id', itemId);
-        checkedItems.remove(itemId);
+      if (isChecked) { 
+        await Supabase.instance.client.from('cek_oke_status').upsert({'id': itemId, 'status': 'OKE'}); 
+        checkedItems.add(itemId); 
+      } else { 
+        await Supabase.instance.client.from('cek_oke_status').delete().eq('id', itemId); 
+        checkedItems.remove(itemId); 
       }
       setState(() {});
-    } catch (e) {
+    } catch (e) { 
       print("Error save checked status: $e");
+      Utils.showErrorSnackbar(context, "Gagal menyimpan status");
     }
   }
 
   Future<void> _saveNote(String itemId, String note) async {
     try {
-      if (note.isEmpty) {
-        await Supabase.instance.client
-            .from('cek_oke_notes')
-            .delete()
-            .eq('id', itemId);
-        notes.remove(itemId);
-      } else {
-        await Supabase.instance.client
-            .from('cek_oke_notes')
-            .upsert({'id': itemId, 'note': note});
-        notes[itemId] = note;
+      if (note.isEmpty) { 
+        await Supabase.instance.client.from('cek_oke_notes').delete().eq('id', itemId); 
+        notes.remove(itemId); 
+      } else { 
+        await Supabase.instance.client.from('cek_oke_notes').upsert({'id': itemId, 'note': note}); 
+        notes[itemId] = note; 
       }
       setState(() {});
-    } catch (e) {
+    } catch (e) { 
       print("Error save note: $e");
+      Utils.showErrorSnackbar(context, "Gagal menyimpan catatan");
     }
   }
 
   Future<void> _refreshCheckedItems() async {
-    checkedItems.clear();
-    notes.clear();
-    await _loadCheckedItems();
-    await _loadNotes();
-    setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("✅ Semua status dan note telah direset"), backgroundColor: Colors.orange),
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Reset Status"),
+        content: const Text("Apakah Anda yakin ingin mereset semua status CEK OKE dan catatan?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Batal")),
+          TextButton(onPressed: () => Navigator.pop(context, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text("Reset")),
+        ],
+      ),
     );
+
+    if (confirm != true) return;
+
+    setState(() { isLoading = true; });
+
+    try {
+      await Supabase.instance.client.from('cek_oke_status').delete().neq('id', '0');
+      await Supabase.instance.client.from('cek_oke_notes').delete().neq('id', '0');
+      checkedItems.clear();
+      notes.clear();
+      if (mounted) {
+        Utils.showSuccessSnackbar(context, "Semua status dan catatan berhasil direset");
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) Utils.showErrorSnackbar(context, "Gagal mereset: $e");
+    } finally {
+      if (mounted) setState(() { isLoading = false; });
+    }
   }
 
   Future<void> _loadData() async {
     try {
-      setState(() {
-        isLoading = true;
-        errorMessage = null;
-      });
+      setState(() { isLoading = true; errorMessage = null; });
       
       List<Map<String, dynamic>> allGws = [];
       int start = 0;
       const int batchSize = 1000;
       bool hasMore = true;
-      
       while (hasMore) {
-        final response = await Supabase.instance.client
-            .from('inventory_gws')
-            .select()
-            .range(start, start + batchSize - 1);
-        
+        final response = await Supabase.instance.client.from('inventory_gws').select().range(start, start + batchSize - 1);
         allGws.addAll(List<Map<String, dynamic>>.from(response));
-        
-        if (response.length < batchSize) {
-          hasMore = false;
-        } else {
-          start += batchSize;
-        }
+        if (response.length < batchSize) hasMore = false; else start += batchSize;
       }
       
       List<Map<String, dynamic>> allNonGws = [];
       start = 0;
       hasMore = true;
-      
       while (hasMore) {
-        final response = await Supabase.instance.client
-            .from('inventory_non_gws')
-            .select()
-            .range(start, start + batchSize - 1);
-        
+        final response = await Supabase.instance.client.from('inventory_non_gws').select().range(start, start + batchSize - 1);
         allNonGws.addAll(List<Map<String, dynamic>>.from(response));
-        
-        if (response.length < batchSize) {
-          hasMore = false;
-        } else {
-          start += batchSize;
-        }
+        if (response.length < batchSize) hasMore = false; else start += batchSize;
       }
       
-      setState(() {
-        allDataGws = allGws;
-        allDataNonGws = allNonGws;
-        isLoading = false;
-      });
-    } catch (e) {
-      setState(() {
-        errorMessage = e.toString();
-        isLoading = false;
-      });
+      setState(() { allDataGws = allGws; allDataNonGws = allNonGws; isLoading = false; });
+    } catch (e) { 
+      setState(() { errorMessage = e.toString(); isLoading = false; });
+      Utils.showErrorSnackbar(context, "Gagal memuat data: $e");
     }
   }
 
   List<Map<String, dynamic>> get filteredData {
-    if (searchCode.isEmpty) {
-      return [];
-    }
-    
+    if (searchCode.isEmpty) return [];
     List<Map<String, dynamic>> results = [];
     String query = searchCode.toUpperCase().trim();
+    
+    int gwsCounter = 0;
+    int nonGwsCounter = 0;
     
     for (var item in allDataGws) {
       String code = (item['code'] ?? '').toString().toUpperCase();
       if (code.contains(query)) {
-        results.add({
-          ...item,
-          'ticket_bc': item['ticket_bc'] ?? '-',
-          'lokasi': item['lokasi'] ?? '-',
-          'weekly': item['weekly'] ?? '-',
-          'qty': item['qty'] ?? 0,
-          'id': 'gws_${item['id']}',
-          'isGws': true,
+        results.add({ 
+          ...item, 
+          'ticket_bc': item['ticket_bc'] ?? '-', 
+          'lokasi': item['lokasi'] ?? '-', 
+          'weekly': item['weekly'] ?? '-', 
+          'qty': item['qty'] ?? 0, 
+          'id': 'gws_${item['id']}_${gwsCounter++}_${item['code']}',
+          'isGws': true 
         });
       }
     }
@@ -1325,190 +1759,84 @@ class _CekByCodePageState extends State<CekByCodePage> {
     for (var item in allDataNonGws) {
       String code = (item['code'] ?? '').toString().toUpperCase();
       if (code.contains(query)) {
-        results.add({
-          ...item,
-          'ticket_bc': 'NON GWS',
-          'lokasi': item['lokasi'] ?? '-',
-          'weekly': item['weekly'] ?? '-',
-          'qty': item['qty'] ?? 0,
-          'id': 'ngws_${item['uniq_id']}',
-          'isGws': false,
+        results.add({ 
+          ...item, 
+          'ticket_bc': 'NON GWS', 
+          'lokasi': item['lokasi'] ?? '-', 
+          'weekly': item['weekly'] ?? '-', 
+          'qty': item['qty'] ?? 0, 
+          'id': 'ngws_${item['uniq_id']}_${nonGwsCounter++}',
+          'isGws': false 
         });
       }
     }
     
     if (sortBy == 'weekly_asc') {
-      results.sort((a, b) {
-        String w1 = a['weekly']?.toString() ?? '';
-        String w2 = b['weekly']?.toString() ?? '';
-        return w1.compareTo(w2);
-      });
+      results.sort((a, b) { String w1 = a['weekly']?.toString() ?? ''; String w2 = b['weekly']?.toString() ?? ''; return w1.compareTo(w2); });
     } else if (sortBy == 'weekly_desc') {
-      results.sort((a, b) {
-        String w1 = a['weekly']?.toString() ?? '';
-        String w2 = b['weekly']?.toString() ?? '';
-        return w2.compareTo(w1);
-      });
+      results.sort((a, b) { String w1 = a['weekly']?.toString() ?? ''; String w2 = b['weekly']?.toString() ?? ''; return w2.compareTo(w1); });
     }
-    
     return results;
   }
 
   Map<String, dynamic> getSummary() {
-    int totalGws = 0;
-    int totalNonGws = 0;
-    Map<String, int> weeklyGws = {};
-    Map<String, int> weeklyNonGws = {};
-    
+    int totalGws = 0, totalNonGws = 0;
+    Map<String, int> weeklyGws = {}, weeklyNonGws = {};
     for (var item in filteredData) {
       int qty = item['qty'] ?? 0;
       String weekly = item['weekly']?.toString() ?? '-';
       bool isGws = item['isGws'] == true;
-      
-      if (isGws) {
-        totalGws += qty;
-        weeklyGws[weekly] = (weeklyGws[weekly] ?? 0) + qty;
-      } else {
-        totalNonGws += qty;
-        weeklyNonGws[weekly] = (weeklyNonGws[weekly] ?? 0) + qty;
-      }
+      if (isGws) { totalGws += qty; weeklyGws[weekly] = (weeklyGws[weekly] ?? 0) + qty; }
+      else { totalNonGws += qty; weeklyNonGws[weekly] = (weeklyNonGws[weekly] ?? 0) + qty; }
     }
-    
-    return {
-      'totalGws': totalGws,
-      'totalNonGws': totalNonGws,
-      'totalAll': totalGws + totalNonGws,
-      'weeklyGws': weeklyGws,
-      'weeklyNonGws': weeklyNonGws,
-    };
+    return { 'totalGws': totalGws, 'totalNonGws': totalNonGws, 'totalAll': totalGws + totalNonGws, 'weeklyGws': weeklyGws, 'weeklyNonGws': weeklyNonGws };
   }
 
   Future<int> getStockFromMaster(String code) async {
     if (code.isEmpty) return 0;
     try {
-      final response = await Supabase.instance.client
-          .from('stock_master')
-          .select('stock')
-          .eq('code', code.toUpperCase())
-          .maybeSingle();
-      
-      if (response != null) {
-        return response['stock'] ?? 0;
-      }
-      return 0;
-    } catch (e) {
-      return 0;
-    }
+      final response = await Supabase.instance.client.from('stock_master').select('stock').eq('code', code.toUpperCase()).maybeSingle();
+      return response != null ? (response['stock'] ?? 0) : 0;
+    } catch (e) { return 0; }
   }
 
   Future<Map<String, dynamic>> _getSummaryWithStock() async {
     var summary = getSummary();
     int stock = await getStockFromMaster(searchCode);
     summary['stock'] = stock;
-    int balance = (summary['totalAll'] as int) - stock;
-    summary['balance'] = balance;
+    summary['balance'] = stock - (summary['totalAll'] as int);
     return summary;
   }
 
   void _exportToCSV() {
-    if (filteredData.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Tidak ada data untuk di export"), backgroundColor: Colors.red),
-      );
-      return;
-    }
-    
+    if (filteredData.isEmpty) { Utils.showErrorSnackbar(context, "Tidak ada data untuk di export"); return; }
     String csvContent = "No,TICKET BC,Code,Lokasi,Weekly,QTY,Status,Note\n";
-    
     for (int i = 0; i < filteredData.length; i++) {
       var item = filteredData[i];
       String status = checkedItems.contains(item['id']) ? "OKE CEK" : "";
       String note = notes[item['id']] ?? "";
-      csvContent += "${i + 1},"
-          "\"${item['ticket_bc'] ?? ''}\","
-          "\"${(item['code'] ?? '').toString().toUpperCase()}\","
-          "\"${item['lokasi'] ?? ''}\","
-          "\"${item['weekly'] ?? ''}\","
-          "${item['qty'] ?? 0},"
-          "\"$status\","
-          "\"$note\"\n";
+      csvContent += "${i + 1},\"${item['ticket_bc'] ?? ''}\",\"${(item['code'] ?? '').toString().toUpperCase()}\",\"${item['lokasi'] ?? ''}\",\"${item['weekly'] ?? ''}\",${item['qty'] ?? 0},\"$status\",\"$note\"\n";
     }
-    
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.download, color: Colors.green),
-            SizedBox(width: 8),
-            Text("Export CSV"),
-          ],
-        ),
+        title: const Row(children: [Icon(Icons.download, color: Colors.green), SizedBox(width: 8), Text("Export CSV")]),
         content: SizedBox(
           width: double.maxFinite,
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                color: Colors.green.shade50,
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle, color: Colors.green, size: 20),
-                    const SizedBox(width: 8),
-                    Text("${filteredData.length} baris data siap di-copy"),
-                  ],
-                ),
-              ),
+              Container(padding: const EdgeInsets.all(8), color: Colors.green.shade50, child: Row(children: [const Icon(Icons.check_circle, color: Colors.green, size: 20), const SizedBox(width: 8), Text("${filteredData.length} baris data siap di-copy")])),
               const SizedBox(height: 12),
               const Text("Copy teks CSV di bawah ini, lalu paste ke Excel:", style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              Container(
-                height: 300,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey.shade400),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: SingleChildScrollView(
-                    child: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: SelectableText(
-                        csvContent,
-                        style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              Container(height: 300, decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade400), borderRadius: BorderRadius.circular(8)), child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: SingleChildScrollView(child: Padding(padding: const EdgeInsets.all(8.0), child: SelectableText(csvContent, style: const TextStyle(fontSize: 10, fontFamily: 'monospace')))))),
               const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(8),
-                color: Colors.blue.shade50,
-                child: const Row(
-                  children: [
-                    Icon(Icons.info_outline, size: 16, color: Colors.blue),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        "Tips: Select All (Ctrl+A) lalu Copy (Ctrl+C), paste ke Excel",
-                        style: TextStyle(fontSize: 11),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              Container(padding: const EdgeInsets.all(8), color: Colors.blue.shade50, child: const Row(children: [Icon(Icons.info_outline, size: 16, color: Colors.blue), SizedBox(width: 8), Expanded(child: Text("Tips: Select All (Ctrl+A) lalu Copy (Ctrl+C), paste ke Excel", style: TextStyle(fontSize: 11)))])),
             ],
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Tutup"),
-          ),
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Tutup"))],
       ),
     );
   }
@@ -1516,27 +1844,14 @@ class _CekByCodePageState extends State<CekByCodePage> {
   Widget _buildCompareCard(String label, int value, Color color) {
     String displayValue = value.toString();
     if (label == "BALANCE") {
-      if (value > 0) {
-        displayValue = "+$value";
-      } else if (value < 0) {
-        displayValue = "-${value.abs()}";
-      } else {
-        displayValue = "0";
-      }
+      if (value > 0) displayValue = "-$value";
+      else if (value < 0) displayValue = "+${value.abs()}";
+      else displayValue = "0";
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Column(
-        children: [
-          Text(label, style: TextStyle(fontSize: 12, color: color)),
-          Text(displayValue, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: label == "BALANCE" ? Colors.red : color)),
-        ],
-      ),
+      decoration: BoxDecoration(color: color.withOpacity(0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: color.withOpacity(0.3))),
+      child: Column(children: [Text(label, style: TextStyle(fontSize: 12, color: color)), Text(displayValue, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: label == "BALANCE" ? Colors.red : color))]),
     );
   }
 
@@ -1546,27 +1861,8 @@ class _CekByCodePageState extends State<CekByCodePage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("Tambah Catatan"),
-        content: TextField(
-          controller: noteController,
-          decoration: const InputDecoration(
-            hintText: "Ketik catatan untuk baris ini...",
-            border: OutlineInputBorder(),
-          ),
-          maxLines: 3,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Batal"),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              _saveNote(itemId, noteController.text);
-              Navigator.pop(context);
-            },
-            child: const Text("Simpan"),
-          ),
-        ],
+        content: TextField(controller: noteController, decoration: const InputDecoration(hintText: "Ketik catatan untuk baris ini...", border: OutlineInputBorder()), maxLines: 3),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Batal")), ElevatedButton(onPressed: () { _saveNote(itemId, noteController.text); Navigator.pop(context); }, child: const Text("Simpan"))],
       ),
     );
   }
@@ -1580,28 +1876,16 @@ class _CekByCodePageState extends State<CekByCodePage> {
         foregroundColor: Colors.white,
         actions: [
           PopupMenuButton<String>(
-            icon: const Icon(Icons.sort),
-            onSelected: (value) {
-              setState(() {
-                sortBy = value;
-              });
-            },
+            icon: const Icon(Icons.sort), 
+            onSelected: (value) { setState(() { sortBy = value; }); }, 
             itemBuilder: (context) => [
-              const PopupMenuItem(value: "default", child: Text("Default")),
-              const PopupMenuItem(value: "weekly_asc", child: Text("Weekly A → Z")),
-              const PopupMenuItem(value: "weekly_desc", child: Text("Weekly Z → A")),
-            ],
+              const PopupMenuItem(value: "default", child: Text("Default")), 
+              const PopupMenuItem(value: "weekly_asc", child: Text("Weekly A → Z")), 
+              const PopupMenuItem(value: "weekly_desc", child: Text("Weekly Z → A"))
+            ]
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _refreshCheckedItems,
-            tooltip: "Reset semua status CEK OKE",
-          ),
-          IconButton(
-            icon: const Icon(Icons.download),
-            onPressed: _exportToCSV,
-            tooltip: "Export hasil pencarian ke CSV",
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _refreshCheckedItems, tooltip: "Reset semua status CEK OKE"),
+          IconButton(icon: const Icon(Icons.download), onPressed: _exportToCSV, tooltip: "Export hasil pencarian ke CSV"),
         ],
       ),
       body: Column(
@@ -1611,204 +1895,85 @@ class _CekByCodePageState extends State<CekByCodePage> {
             child: Column(
               children: [
                 TextField(
-                  controller: _codeController,
-                  autofocus: true,
+                  controller: _codeController, 
+                  autofocus: true, 
                   decoration: InputDecoration(
-                    hintText: "Cari berdasarkan Code... (contoh: 7033, C45830)",
-                    prefixIcon: const Icon(Icons.search),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                    filled: true,
-                    fillColor: Colors.white,
-                    suffixIcon: _codeController.text.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _codeController.clear();
-                              setState(() => searchCode = "");
-                            },
-                          )
-                        : null,
-                  ),
-                  onChanged: (value) => setState(() => searchCode = value),
+                    hintText: "Cari berdasarkan Code... (contoh: 7033, C45830)", 
+                    prefixIcon: const Icon(Icons.search), 
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)), 
+                    filled: true, 
+                    fillColor: Colors.white, 
+                    suffixIcon: _codeController.text.isNotEmpty 
+                        ? IconButton(icon: const Icon(Icons.clear), onPressed: () { _codeController.clear(); setState(() => searchCode = ""); }) 
+                        : null
+                  ), 
+                  onChanged: (value) => setState(() => searchCode = value)
                 ),
                 const SizedBox(height: 8),
-                Text(
-                  "🔍 Mencari di: GWS (NK01) + NON GWS",
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                ),
+                Text("🔍 Mencari di: GWS (NK01) + NON GWS", style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
               ],
             ),
           ),
-          Expanded(
-            child: _buildBody(),
-          ),
+          Expanded(child: _buildBody()),
         ],
       ),
     );
   }
 
   Widget _buildBody() {
-    if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (errorMessage != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            Text("Error: $errorMessage"),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _loadData,
-              child: const Text("Coba Lagi"),
-            ),
-          ],
-        ),
-      );
-    }
-
+    if (isLoading) return const Center(child: CircularProgressIndicator());
+    if (errorMessage != null) return Center(child: Text("Error: $errorMessage"));
     if (searchCode.isEmpty) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.search, size: 64, color: Colors.grey),
-            SizedBox(height: 16),
-            Text("Masukkan kode barang untuk mencari"),
-            SizedBox(height: 8),
-            Text("Contoh: 7033, C45830, 12510", style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
-      );
+      return const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.search, size: 64, color: Colors.grey), SizedBox(height: 16), Text("Masukkan kode barang untuk mencari"), SizedBox(height: 8), Text("Contoh: 7033, C45830, 12510", style: TextStyle(fontSize: 12, color: Colors.grey))]));
     }
-
     if (filteredData.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.search_off, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            Text("Tidak ada data ditemukan untuk \"$searchCode\""),
-            const SizedBox(height: 8),
-            Text("Coba cari dengan kode yang lain", style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
-      );
+      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.search_off, size: 64, color: Colors.grey), const SizedBox(height: 16), Text("Tidak ada data ditemukan untuk \"$searchCode\""), const SizedBox(height: 8), Text("Coba cari dengan kode yang lain", style: TextStyle(fontSize: 12, color: Colors.grey))]));
     }
 
     return FutureBuilder<Map<String, dynamic>>(
       future: _getSummaryWithStock(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
         var summary = snapshot.data!;
-        int totalGws = summary['totalGws'];
-        int totalNonGws = summary['totalNonGws'];
-        int totalAll = summary['totalAll'];
-        int stock = summary['stock'];
-        int balance = summary['balance'];
+        int totalGws = summary['totalGws'], totalNonGws = summary['totalNonGws'], totalAll = summary['totalAll'], stock = summary['stock'], balance = summary['balance'];
         var weeklyGws = summary['weeklyGws'] as Map<String, int>;
         var weeklyNonGws = summary['weeklyNonGws'] as Map<String, int>;
-        
+
         return Column(
           children: [
-            // RINGKASAN
             Container(
               color: Colors.green.shade50,
               padding: const EdgeInsets.all(12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text("🔍 Hasil pencarian code: \"$searchCode\"",
-                          style: const TextStyle(fontWeight: FontWeight.bold)),
-                      Text("${filteredData.length} baris | Total: $totalAll Pcs",
-                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
-                    ],
-                  ),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("🔍 Hasil pencarian code: \"$searchCode\"", style: const TextStyle(fontWeight: FontWeight.bold)), Text("${filteredData.length} baris | Total: $totalAll Pcs", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))]),
                   const SizedBox(height: 8),
-                  
-                  // SATU TOMBOL UNTUK SEMUA RINGKASAN
                   Card(
                     margin: EdgeInsets.zero,
                     child: ExpansionTile(
                       tilePadding: const EdgeInsets.symmetric(horizontal: 16),
                       childrenPadding: const EdgeInsets.all(12),
-                      title: const Row(
-                        children: [
-                          Icon(Icons.summarize, size: 20, color: Colors.blue),
-                          SizedBox(width: 8),
-                          Text("COMPARE STOCK", style: TextStyle(fontWeight: FontWeight.bold)),
-                        ],
-                      ),
+                      title: const Row(children: [Icon(Icons.summarize, size: 20, color: Colors.blue), SizedBox(width: 8), Text("LIHAT RINGKASAN", style: TextStyle(fontWeight: FontWeight.bold))]),
                       initiallyExpanded: false,
                       children: [
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("COMPARE STOCK - TOTAL GWS vs NON GWS vs STOCK MASTER", 
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            const Text("COMPARE STOCK", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                             const SizedBox(height: 8),
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceAround,
-                              children: [
-                                _buildCompareCard("STOCK", stock, Colors.blue),
-                                _buildCompareCard("GWS", totalGws, Colors.orange),
-                                _buildCompareCard("NON GWS", totalNonGws, Colors.purple),
-                                _buildCompareCard("BALANCE", balance, Colors.red),
-                              ],
-                            ),
+                            Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [_buildCompareCard("STOCK", stock, Colors.blue), _buildCompareCard("GWS", totalGws, Colors.orange), _buildCompareCard("NON GWS", totalNonGws, Colors.purple), _buildCompareCard("BALANCE", balance, Colors.red)]),
                             const Divider(height: 24),
-                            
                             if (weeklyGws.isNotEmpty) ...[
-                              const Text("RINCIAN PER WEEKLY (GWS)", 
-                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                              const Text("RINCIAN PER WEEKLY (GWS)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                               const SizedBox(height: 8),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: weeklyGws.entries.map((entry) {
-                                  return Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.orange.shade50,
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: Text("${entry.key}: ${entry.value} Pcs",
-                                        style: TextStyle(color: Colors.orange.shade700)),
-                                  );
-                                }).toList(),
-                              ),
+                              Wrap(spacing: 8, runSpacing: 8, children: weeklyGws.entries.map((entry) => Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: Colors.orange.shade50, borderRadius: BorderRadius.circular(20)), child: Text("${entry.key}: ${entry.value} Pcs", style: TextStyle(color: Colors.orange.shade700)))).toList()),
                               const SizedBox(height: 16),
                             ],
-                            
                             if (weeklyNonGws.isNotEmpty) ...[
-                              const Text("RINCIAN PER WEEKLY (NON GWS)", 
-                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                              const Text("RINCIAN PER WEEKLY (NON GWS)", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                               const SizedBox(height: 8),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: weeklyNonGws.entries.map((entry) {
-                                  return Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                    decoration: BoxDecoration(
-                                      color: Colors.purple.shade50,
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: Text("${entry.key}: ${entry.value} Pcs",
-                                        style: TextStyle(color: Colors.purple.shade700)),
-                                  );
-                                }).toList(),
-                              ),
+                              Wrap(spacing: 8, runSpacing: 8, children: weeklyNonGws.entries.map((entry) => Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), decoration: BoxDecoration(color: Colors.purple.shade50, borderRadius: BorderRadius.circular(20)), child: Text("${entry.key}: ${entry.value} Pcs", style: TextStyle(color: Colors.purple.shade700)))).toList()),
                             ],
                           ],
                         ),
@@ -1818,8 +1983,6 @@ class _CekByCodePageState extends State<CekByCodePage> {
                 ],
               ),
             ),
-            
-            // TAMPILAN LIST (bukan tabel)
             Expanded(
               child: ListView.builder(
                 itemCount: filteredData.length,
@@ -1827,113 +1990,30 @@ class _CekByCodePageState extends State<CekByCodePage> {
                   final item = filteredData[index];
                   final bool isChecked = checkedItems.contains(item['id']);
                   final bool isGws = item['isGws'] == true;
-                  final currentNote = notes[item['id']] ?? "";
+                  final String currentNote = notes[item['id']] ?? "";
                   final Color textColor = isGws ? Colors.blue.shade700 : Colors.orange.shade700;
-                  
                   return Card(
                     margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     color: isChecked ? Colors.green.shade50 : null,
                     child: ListTile(
-                      leading: Icon(
-                        isGws ? Icons.inventory : Icons.warehouse,
-                        color: textColor,
-                        size: 28,
-                      ),
-                      title: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              (item['code'] ?? '-').toString().toUpperCase(),
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                                color: textColor,
-                              ),
-                            ),
-                          ),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Colors.red.shade50,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              "${item['qty'] ?? 0} Pcs",
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.red,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                      leading: Icon(isGws ? Icons.inventory : Icons.warehouse, color: textColor, size: 28),
+                      title: Row(children: [Expanded(child: Text((item['code'] ?? '-').toString().toUpperCase(), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: textColor))), Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(12)), child: Text("${item['qty'] ?? 0} Pcs", style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red)))]),
                       subtitle: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(Icons.qr_code, size: 14, color: Colors.grey.shade600),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  item['ticket_bc'] ?? '-',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                                ),
-                              ),
-                            ],
-                          ),
+                          Row(children: [Icon(Icons.qr_code, size: 14, color: Colors.grey.shade600), const SizedBox(width: 4), Expanded(child: Text(item['ticket_bc'] ?? '-', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)))]),
                           const SizedBox(height: 2),
-                          Row(
-                            children: [
-                              Icon(Icons.location_on, size: 14, color: Colors.grey.shade600),
-                              const SizedBox(width: 4),
-                              Expanded(
-                                child: Text(
-                                  item['lokasi'] ?? '-',
-                                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                                ),
-                              ),
-                            ],
-                          ),
+                          Row(children: [Icon(Icons.location_on, size: 14, color: Colors.grey.shade600), const SizedBox(width: 4), Expanded(child: Text(item['lokasi'] ?? '-', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)))]),
                           const SizedBox(height: 2),
-                          Row(
-                            children: [
-                              Icon(Icons.calendar_today, size: 14, color: Colors.grey.shade600),
-                              const SizedBox(width: 4),
-                              Text(
-                                "Weekly: ${item['weekly'] ?? '-'}",
-                                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                              ),
-                            ],
-                          ),
+                          Row(children: [Icon(Icons.calendar_today, size: 14, color: Colors.grey.shade600), const SizedBox(width: 4), Text("Weekly: ${item['weekly'] ?? '-'}", style: TextStyle(fontSize: 12, color: Colors.grey.shade600))]),
                         ],
                       ),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // Tombol CEK OKE
-                          IconButton(
-                            icon: Icon(
-                              isChecked ? Icons.check_circle : Icons.check_circle_outline,
-                              color: isChecked ? Colors.green : Colors.grey,
-                              size: 28,
-                            ),
-                            onPressed: () {
-                              _saveCheckedStatus(item['id'], !isChecked);
-                            },
-                          ),
-                          // Tombol NOTE
-                          IconButton(
-                            icon: Icon(
-                              currentNote.isNotEmpty ? Icons.edit_note : Icons.note_add,
-                              color: currentNote.isNotEmpty ? Colors.blue : Colors.grey,
-                              size: 24,
-                            ),
-                            onPressed: () {
-                              _showNoteDialog(item['id'], currentNote);
-                            },
-                          ),
+                          IconButton(icon: Icon(isChecked ? Icons.check_circle : Icons.check_circle_outline, color: isChecked ? Colors.green : Colors.grey, size: 28), onPressed: () { _saveCheckedStatus(item['id'], !isChecked); }),
+                          IconButton(icon: Icon(currentNote.isNotEmpty ? Icons.edit_note : Icons.note_add, color: currentNote.isNotEmpty ? Colors.blue : Colors.grey, size: 24), onPressed: () { _showNoteDialog(item['id'], currentNote); }),
                         ],
                       ),
                     ),
@@ -1949,7 +2029,7 @@ class _CekByCodePageState extends State<CekByCodePage> {
 }
 
 // ==============================================
-// CEK BY AREA PAGE - DENGAN CEK OKE DAN REFRESH
+// CEK BY AREA PAGE (DENGAN UNIQUE ID FIX)
 // ==============================================
 class CekByAreaPage extends StatefulWidget {
   const CekByAreaPage({super.key});
@@ -1966,21 +2046,21 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
   bool groupByLocation = true;
   
   Set<String> checkedItems = {};
+  Map<String, String> notes = {};
 
   @override
   void initState() {
     super.initState();
     _loadAllData();
     _loadCheckedItems();
+    _loadNotes();
   }
 
   Future<void> _loadCheckedItems() async {
     try {
-      final response = await Supabase.instance.client
-          .from('cek_oke_status_area')
-          .select();
-      for (var item in response) {
-        checkedItems.add(item['id'].toString());
+      final response = await Supabase.instance.client.from('cek_oke_status_area').select();
+      for (var item in response) { 
+        checkedItems.add(item['id'].toString()); 
       }
       setState(() {});
     } catch (e) {
@@ -1988,91 +2068,110 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
     }
   }
 
+  Future<void> _loadNotes() async {
+    try {
+      final response = await Supabase.instance.client.from('cek_oke_notes_area').select();
+      for (var item in response) { 
+        notes[item['id'].toString()] = item['note'].toString(); 
+      }
+      setState(() {});
+    } catch (e) {
+      print("Error load notes: $e");
+    }
+  }
+
   Future<void> _saveCheckedStatus(String itemId, bool isChecked) async {
     try {
-      if (isChecked) {
-        await Supabase.instance.client
-            .from('cek_oke_status_area')
-            .upsert({'id': itemId, 'status': 'OKE'});
-        checkedItems.add(itemId);
-      } else {
-        await Supabase.instance.client
-            .from('cek_oke_status_area')
-            .delete()
-            .eq('id', itemId);
-        checkedItems.remove(itemId);
+      if (isChecked) { 
+        await Supabase.instance.client.from('cek_oke_status_area').upsert({'id': itemId, 'status': 'OKE'}); 
+        checkedItems.add(itemId); 
+      } else { 
+        await Supabase.instance.client.from('cek_oke_status_area').delete().eq('id', itemId); 
+        checkedItems.remove(itemId); 
       }
       setState(() {});
     } catch (e) {
       print("Error save checked status: $e");
+      Utils.showErrorSnackbar(context, "Gagal menyimpan status");
+    }
+  }
+
+  Future<void> _saveNote(String itemId, String note) async {
+    try {
+      if (note.isEmpty) { 
+        await Supabase.instance.client.from('cek_oke_notes_area').delete().eq('id', itemId); 
+        notes.remove(itemId); 
+      } else { 
+        await Supabase.instance.client.from('cek_oke_notes_area').upsert({'id': itemId, 'note': note}); 
+        notes[itemId] = note; 
+      }
+      setState(() {});
+    } catch (e) {
+      print("Error save note: $e");
+      Utils.showErrorSnackbar(context, "Gagal menyimpan catatan");
     }
   }
 
   Future<void> _refreshCheckedItems() async {
-    checkedItems.clear();
-    await _loadCheckedItems();
-    setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("✅ Semua status CEK OKE telah direset"), backgroundColor: Colors.orange),
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Reset Status"),
+        content: const Text("Apakah Anda yakin ingin mereset semua status CEK OKE dan catatan untuk Area?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("Batal")),
+          TextButton(onPressed: () => Navigator.pop(context, true), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text("Reset")),
+        ],
+      ),
     );
+
+    if (confirm != true) return;
+
+    setState(() { isLoading = true; });
+
+    try {
+      await Supabase.instance.client.from('cek_oke_status_area').delete().neq('id', '0');
+      await Supabase.instance.client.from('cek_oke_notes_area').delete().neq('id', '0');
+      checkedItems.clear();
+      notes.clear();
+      if (mounted) {
+        Utils.showSuccessSnackbar(context, "Semua status dan catatan area berhasil direset");
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) Utils.showErrorSnackbar(context, "Gagal mereset: $e");
+    } finally {
+      if (mounted) setState(() { isLoading = false; });
+    }
   }
 
   Future<void> _loadAllData() async {
     try {
-      setState(() {
-        isLoading = true;
-        errorMessage = null;
-      });
+      setState(() { isLoading = true; errorMessage = null; });
       
       List<Map<String, dynamic>> allGws = [];
       int start = 0;
       const int batchSize = 1000;
       bool hasMore = true;
-      
       while (hasMore) {
-        final response = await Supabase.instance.client
-            .from('inventory_gws')
-            .select()
-            .range(start, start + batchSize - 1);
-        
+        final response = await Supabase.instance.client.from('inventory_gws').select().range(start, start + batchSize - 1);
         allGws.addAll(List<Map<String, dynamic>>.from(response));
-        
-        if (response.length < batchSize) {
-          hasMore = false;
-        } else {
-          start += batchSize;
-        }
+        if (response.length < batchSize) hasMore = false; else start += batchSize;
       }
       
       List<Map<String, dynamic>> allNonGws = [];
       start = 0;
       hasMore = true;
-      
       while (hasMore) {
-        final response = await Supabase.instance.client
-            .from('inventory_non_gws')
-            .select()
-            .range(start, start + batchSize - 1);
-        
+        final response = await Supabase.instance.client.from('inventory_non_gws').select().range(start, start + batchSize - 1);
         allNonGws.addAll(List<Map<String, dynamic>>.from(response));
-        
-        if (response.length < batchSize) {
-          hasMore = false;
-        } else {
-          start += batchSize;
-        }
+        if (response.length < batchSize) hasMore = false; else start += batchSize;
       }
       
-      setState(() {
-        allDataGws = allGws;
-        allDataNonGws = allNonGws;
-        isLoading = false;
-      });
-    } catch (e) {
-      setState(() {
-        errorMessage = e.toString();
-        isLoading = false;
-      });
+      setState(() { allDataGws = allGws; allDataNonGws = allNonGws; isLoading = false; });
+    } catch (e) { 
+      setState(() { errorMessage = e.toString(); isLoading = false; });
+      Utils.showErrorSnackbar(context, "Gagal memuat data: $e");
     }
   }
 
@@ -2080,40 +2179,21 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
     if (lokasi.isEmpty) return "Unknown";
     RegExp regExp = RegExp(r'-(\d+[A-Z])-');
     Match? match = regExp.firstMatch(lokasi);
-    if (match != null && match.groupCount >= 1) {
-      return match.group(1)!;
-    }
-    return "Unknown";
+    return match != null ? match.group(1)! : "Unknown";
   }
 
   Map<String, List<String>> getBlocksWithLines() {
     Map<String, Set<String>> blockLines = {};
-    
     for (var item in allDataGws) {
       String lokasi = (item['lokasi'] ?? '').toString().toUpperCase();
-      if (lokasi.isNotEmpty) {
-        String block = getBlock(lokasi);
-        if (block != "Unknown") {
-          blockLines.putIfAbsent(block, () => {}).add(lokasi);
-        }
-      }
+      if (lokasi.isNotEmpty) { String block = getBlock(lokasi); if (block != "Unknown") blockLines.putIfAbsent(block, () => {}).add(lokasi); }
     }
-    
     for (var item in allDataNonGws) {
       String lokasi = (item['lokasi'] ?? '').toString().toUpperCase();
-      if (lokasi.isNotEmpty) {
-        String block = getBlock(lokasi);
-        if (block != "Unknown") {
-          blockLines.putIfAbsent(block, () => {}).add(lokasi);
-        }
-      }
+      if (lokasi.isNotEmpty) { String block = getBlock(lokasi); if (block != "Unknown") blockLines.putIfAbsent(block, () => {}).add(lokasi); }
     }
-    
     Map<String, List<String>> result = {};
-    blockLines.forEach((block, lines) {
-      result[block] = lines.toList()..sort();
-    });
-    
+    blockLines.forEach((block, lines) { result[block] = lines.toList()..sort(); });
     List<String> sortedBlocks = result.keys.toList();
     sortedBlocks.sort((a, b) {
       int floorA = int.tryParse(a.substring(0, a.length-1)) ?? 0;
@@ -2121,25 +2201,23 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
       if (floorA != floorB) return floorA.compareTo(floorB);
       return a.compareTo(b);
     });
-    
     Map<String, List<String>> sortedResult = {};
-    for (var block in sortedBlocks) {
-      sortedResult[block] = result[block]!;
-    }
-    
+    for (var block in sortedBlocks) { sortedResult[block] = result[block]!; }
     return sortedResult;
   }
 
   List<Map<String, dynamic>> getItemsByLine(String line) {
     List<Map<String, dynamic>> items = [];
     
+    int gwsCounter = 0;
     for (var item in allDataGws) {
       String lokasi = (item['lokasi'] ?? '').toString().toUpperCase();
       if (lokasi == line) {
-        items.add({
-          ...item,
-          'source': 'GWS',
+        items.add({ 
+          ...item, 
+          'source': 'GWS', 
           'ticket_bc': item['ticket_bc'] ?? '-',
+          'unique_id': 'gws_${item['id']}_${gwsCounter++}_${item['code']}'
         });
       }
     }
@@ -2147,38 +2225,41 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
     for (var item in allDataNonGws) {
       String lokasi = (item['lokasi'] ?? '').toString().toUpperCase();
       if (lokasi == line) {
-        items.add({
-          ...item,
-          'source': 'NON GWS',
+        items.add({ 
+          ...item, 
+          'source': 'NON GWS', 
           'ticket_bc': 'NON GWS',
+          'unique_id': 'ngws_${item['uniq_id']}'
         });
       }
     }
-
-    items.sort((a, b) {
-      String w1 = a['weekly']?.toString() ?? '';
-      String w2 = b['weekly']?.toString() ?? '';
-      return w1.compareTo(w2);
-    });
     
+    items.sort((a, b) {
+      String code1 = (a['code'] ?? '').toString().toUpperCase();
+      String code2 = (b['code'] ?? '').toString().toUpperCase();
+      return code1.compareTo(code2);
+    });
     return items;
   }
 
   List<Map<String, dynamic>> getAllItems() {
     List<Map<String, dynamic>> allItems = [];
     
-    for (var item in allDataGws) {
-      allItems.add({
-        ...item,
+    int gwsCounter = 0;
+    for (var item in allDataGws) { 
+      allItems.add({ 
+        ...item, 
         'source': 'GWS',
-      });
+        'unique_id': 'gws_${item['id']}_${gwsCounter++}_${item['code']}'
+      }); 
     }
     
-    for (var item in allDataNonGws) {
-      allItems.add({
-        ...item,
+    for (var item in allDataNonGws) { 
+      allItems.add({ 
+        ...item, 
         'source': 'NON GWS',
-      });
+        'unique_id': 'ngws_${item['uniq_id']}'
+      }); 
     }
     
     allItems.sort((a, b) {
@@ -2186,28 +2267,267 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
       String lokasiB = (b['lokasi'] ?? '').toString();
       return lokasiA.compareTo(lokasiB);
     });
-    
     return allItems;
   }
 
   Color _getWeeklyColor(String weekly) {
     if (weekly.isEmpty || weekly == '-') return Colors.grey;
-    
-    Map<String, Color> weeklyColorMap = {
-      '0526': Colors.blue,
-      '0626': Colors.green,
-      '0726': Colors.orange,
-      '0826': Colors.purple,
-      '0926': Colors.teal,
-      '1026': Colors.pink,
-      '1126': Colors.indigo,
-      '1226': Colors.cyan,
-      '1326': Colors.amber,
-      '1426': Colors.lime,
-      '1526': Colors.red,
+    Map<String, Color> weeklyColorMap = { 
+      '0526': Colors.blue, '0626': Colors.green, '0726': Colors.orange, 
+      '0826': Colors.purple, '0926': Colors.teal, '1026': Colors.pink, 
+      '1126': Colors.indigo, '1226': Colors.cyan, '1326': Colors.amber, 
+      '1426': Colors.lime, '1526': Colors.red 
     };
-    
     return weeklyColorMap[weekly] ?? Colors.grey;
+  }
+
+  Future<void> _editItem(Map<String, dynamic> item, String source) async {
+    String tableName = (source == 'GWS') ? 'inventory_gws' : 'inventory_non_gws';
+    String idField = (source == 'GWS') ? 'id' : 'uniq_id';
+    dynamic itemId = item[idField];
+    TextEditingController qtyController = TextEditingController(text: item['qty'].toString());
+    TextEditingController lokasiController = TextEditingController(text: item['lokasi'] ?? '');
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(children: [Icon(Icons.edit, color: Colors.orange.shade700), const SizedBox(width: 8), Expanded(child: Text("Edit ${(item['code'] ?? '-').toString().toUpperCase()}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis))]),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextFormField(controller: qtyController, decoration: const InputDecoration(labelText: "QTY", border: OutlineInputBorder(), prefixIcon: Icon(Icons.numbers)), keyboardType: TextInputType.number),
+            const SizedBox(height: 12),
+            TextFormField(controller: lokasiController, decoration: const InputDecoration(labelText: "LOKASI", border: OutlineInputBorder(), prefixIcon: Icon(Icons.location_on), hintText: "Contoh: NK01-1A-01")),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Batal", style: TextStyle(color: Colors.grey))),
+          ElevatedButton(
+            onPressed: () async {
+              int newQty = int.tryParse(qtyController.text) ?? 0;
+              String newLokasi = lokasiController.text.trim().toUpperCase();
+              if (newLokasi.isEmpty) { Utils.showErrorSnackbar(context, "Lokasi tidak boleh kosong"); return; }
+              try {
+                await Supabase.instance.client.from(tableName).update({'qty': newQty, 'lokasi': newLokasi}).eq(idField, itemId);
+                if (mounted) { Navigator.pop(context); Utils.showSuccessSnackbar(context, "Data berhasil diupdate"); _loadAllData(); }
+              } catch (e) { if (mounted) Utils.showErrorSnackbar(context, "Error: $e"); }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text("Simpan"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showNoteDialog(String itemId, String currentNote) {
+    TextEditingController noteController = TextEditingController(text: currentNote);
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Tambah Catatan"),
+        content: TextField(controller: noteController, decoration: const InputDecoration(hintText: "Ketik catatan untuk baris ini...", border: OutlineInputBorder()), maxLines: 3),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("Batal")), ElevatedButton(onPressed: () { _saveNote(itemId, noteController.text); Navigator.pop(context); }, child: const Text("Simpan"))],
+      ),
+    );
+  }
+
+  void _showAddItemDialog(String currentLokasi) {
+    String selectedSource = 'GWS';
+    TextEditingController codeController = TextEditingController();
+    TextEditingController qtyController = TextEditingController();
+    TextEditingController weeklyController = TextEditingController();
+    TextEditingController ticketBcController = TextEditingController();
+    
+    int qtyValue = 0;
+    
+    Set<String> uniqueCodes = {};
+    for (var item in allDataGws) { uniqueCodes.add((item['code'] ?? '').toString().toUpperCase()); }
+    for (var item in allDataNonGws) { uniqueCodes.add((item['code'] ?? '').toString().toUpperCase()); }
+    List<String> codeList = uniqueCodes.toList()..sort();
+    
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateDialog) {
+          return Dialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(children: [Icon(Icons.add_circle, color: Colors.green, size: 28), const SizedBox(width: 10), const Text("Tambah Data Baru", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))]),
+                  const Divider(height: 24),
+                  SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("LOKASI", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(height: 4),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                              decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.blue.shade200)),
+                              child: Row(children: [const Icon(Icons.location_on, size: 20, color: Colors.blue), const SizedBox(width: 8), Expanded(child: Text(currentLokasi, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)))]),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("SUMBER", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(height: 4),
+                            Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(color: Colors.grey.shade100, borderRadius: BorderRadius.circular(12)),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () { setStateDialog(() { selectedSource = 'GWS'; }); },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                        decoration: BoxDecoration(color: selectedSource == 'GWS' ? Colors.blue : Colors.transparent, borderRadius: BorderRadius.circular(10)),
+                                        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.inventory, color: selectedSource == 'GWS' ? Colors.white : Colors.blue), const SizedBox(width: 8), Text("GWS", style: TextStyle(color: selectedSource == 'GWS' ? Colors.white : Colors.blue, fontWeight: FontWeight.bold))]),
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: GestureDetector(
+                                      onTap: () { setStateDialog(() { selectedSource = 'NON GWS'; }); },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 12),
+                                        decoration: BoxDecoration(color: selectedSource == 'NON GWS' ? Colors.orange : Colors.transparent, borderRadius: BorderRadius.circular(10)),
+                                        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.warehouse, color: selectedSource == 'NON GWS' ? Colors.white : Colors.orange), const SizedBox(width: 8), Text("NON GWS", style: TextStyle(color: selectedSource == 'NON GWS' ? Colors.white : Colors.orange, fontWeight: FontWeight.bold))]),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("CODE", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(height: 4),
+                            Autocomplete<String>(
+                              optionsBuilder: (TextEditingValue textEditingValue) {
+                                if (textEditingValue.text.isEmpty) return const Iterable<String>.empty();
+                                return codeList.where((option) => option.toLowerCase().contains(textEditingValue.text.toLowerCase()));
+                              },
+                              onSelected: (selection) { codeController.text = selection; setStateDialog(() {}); },
+                              fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                                codeController.addListener(() { setStateDialog(() {}); });
+                                return TextFormField(
+                                  controller: codeController,
+                                  focusNode: focusNode,
+                                  decoration: InputDecoration(
+                                    hintText: "Ketik Code...",
+                                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                    filled: true,
+                                    fillColor: Colors.grey.shade50,
+                                    suffixIcon: codeController.text.isNotEmpty ? IconButton(icon: const Icon(Icons.clear, size: 18), onPressed: () { codeController.clear(); setStateDialog(() {}); }) : null,
+                                  ),
+                                  style: const TextStyle(fontSize: 16),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("QTY", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextFormField(
+                                    controller: qtyController,
+                                    decoration: InputDecoration(hintText: "0", border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)), filled: true, fillColor: Colors.grey.shade50, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14)),
+                                    keyboardType: TextInputType.number,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                    onChanged: (value) { setStateDialog(() { qtyValue = int.tryParse(value) ?? 0; }); },
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                InkWell(
+                                  onTap: () { int current = int.tryParse(qtyController.text) ?? 0; if (current > 0) { qtyController.text = (current - 1).toString(); setStateDialog(() { qtyValue = current - 1; }); } },
+                                  child: Container(width: 48, height: 48, decoration: BoxDecoration(color: Colors.red.shade100, borderRadius: BorderRadius.circular(12)), child: const Icon(Icons.remove, color: Colors.red, size: 28)),
+                                ),
+                                InkWell(
+                                  onTap: () { int current = int.tryParse(qtyController.text) ?? 0; qtyController.text = (current + 1).toString(); setStateDialog(() { qtyValue = current + 1; }); },
+                                  child: Container(width: 48, height: 48, decoration: BoxDecoration(color: Colors.green.shade100, borderRadius: BorderRadius.circular(12)), child: const Icon(Icons.add, color: Colors.green, size: 28)),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("WEEKLY", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                            const SizedBox(height: 4),
+                            TextFormField(controller: weeklyController, decoration: InputDecoration(hintText: "Contoh: 1526", border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)), filled: true, fillColor: Colors.grey.shade50, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14)), style: const TextStyle(fontSize: 16)),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        if (selectedSource == 'GWS')
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text("TICKET BC", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                              const SizedBox(height: 4),
+                              TextFormField(controller: ticketBcController, decoration: InputDecoration(hintText: "Nomor ticket", border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)), filled: true, fillColor: Colors.grey.shade50, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14)), style: const TextStyle(fontSize: 16)),
+                            ],
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      Expanded(child: TextButton(onPressed: () => Navigator.pop(context), style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), child: const Text("BATAL", style: TextStyle(fontSize: 16, color: Colors.grey)))),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: () async {
+                            String code = codeController.text.trim().toUpperCase();
+                            String qty = qtyController.text.trim();
+                            String weekly = weeklyController.text.trim();
+                            String ticketBc = ticketBcController.text.trim();
+                            if (code.isEmpty) { Utils.showErrorSnackbar(context, "Code harus diisi"); return; }
+                            if (qty.isEmpty) { Utils.showErrorSnackbar(context, "Qty harus diisi"); return; }
+                            try {
+                              Map<String, dynamic> newData = { 'code': code, 'qty': int.parse(qty), 'lokasi': currentLokasi.toUpperCase(), 'weekly': weekly.isEmpty ? null : weekly, 'date_time': DateTime.now().toIso8601String() };
+                              if (selectedSource == 'GWS') { newData['ticket_bc'] = ticketBc.isEmpty ? null : ticketBc; await Supabase.instance.client.from('inventory_gws').insert(newData); }
+                              else { newData['uniq_id'] = 'UID-${DateTime.now().millisecondsSinceEpoch}'; newData['status'] = 'Normal Stock'; await Supabase.instance.client.from('inventory_non_gws').insert(newData); }
+                              if (mounted) { Navigator.pop(context); Utils.showSuccessSnackbar(context, "Data berhasil ditambahkan"); _loadAllData(); }
+                            } catch (e) { if (mounted) Utils.showErrorSnackbar(context, "Error: $e"); }
+                          },
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                          child: const Text("SIMPAN", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -2218,20 +2538,8 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _refreshCheckedItems,
-            tooltip: "Reset semua status CEK OKE",
-          ),
-          IconButton(
-            icon: Icon(groupByLocation ? Icons.view_list : Icons.grid_view),
-            onPressed: () {
-              setState(() {
-                groupByLocation = !groupByLocation;
-              });
-            },
-            tooltip: groupByLocation ? "Tampilkan semua baris" : "Tampilkan ringkasan",
-          ),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _refreshCheckedItems, tooltip: "Reset semua status CEK OKE"),
+          IconButton(icon: Icon(groupByLocation ? Icons.view_list : Icons.grid_view), onPressed: () { setState(() { groupByLocation = !groupByLocation; }); }, tooltip: groupByLocation ? "Tampilkan semua baris" : "Tampilkan ringkasan"),
         ],
       ),
       body: _buildBody(),
@@ -2239,117 +2547,49 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
   }
 
   Widget _buildBody() {
-    if (isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (errorMessage != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.error, size: 64, color: Colors.red),
-            const SizedBox(height: 16),
-            Text("Error: $errorMessage"),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _loadAllData,
-              child: const Text("Coba Lagi"),
-            ),
-          ],
-        ),
-      );
-    }
+    if (isLoading) return const Center(child: CircularProgressIndicator());
+    if (errorMessage != null) return Center(child: Text("Error: $errorMessage"));
 
     if (!groupByLocation) {
       List<Map<String, dynamic>> allItems = getAllItems();
-      
-      if (allItems.isEmpty) {
-        return const Center(child: Text("Tidak ada data"));
-      }
-      
+      if (allItems.isEmpty) return const Center(child: Text("Tidak ada data"));
       Map<String, List<Map<String, dynamic>>> groupedByLocation = {};
       for (var item in allItems) {
         String lokasi = (item['lokasi'] ?? 'Unknown').toString();
         groupedByLocation.putIfAbsent(lokasi, () => []).add(item);
       }
-      
       List<String> sortedLocations = groupedByLocation.keys.toList()..sort();
-      
       return ListView.builder(
         itemCount: sortedLocations.length,
         itemBuilder: (context, index) {
           String lokasi = sortedLocations[index];
           List<Map<String, dynamic>> items = groupedByLocation[lokasi]!;
           int totalQtyLokasi = items.fold(0, (sum, item) => sum + ((item['qty'] ?? 0) as int));
-          
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: ExpansionTile(
-              title: Text(lokasi, style: const TextStyle(fontWeight: FontWeight.bold)),
+              title: Row(children: [Expanded(child: Text(lokasi, style: const TextStyle(fontWeight: FontWeight.bold))), IconButton(icon: const Icon(Icons.add_circle, color: Colors.green, size: 20), onPressed: () => _showAddItemDialog(lokasi), tooltip: "Tambah data di lokasi ini")]),
               subtitle: Text("${items.length} item | Total Qty: $totalQtyLokasi Pcs"),
-              children: items.map((item) {
-                String itemId = '${item['source']}_${item['code']}_${item['weekly']}_${item['ticket_bc']}';
+              children: items.asMap().entries.map((entry) {
+                final idx = entry.key;
+                final item = entry.value;
+                final String itemId = item['unique_id'];
                 bool isChecked = checkedItems.contains(itemId);
-                
+                String currentNote = notes[itemId] ?? '';
+                String weekly = item['weekly']?.toString() ?? '-';
                 return Container(
                   color: isChecked ? Colors.green.shade100 : null,
                   child: ListTile(
-                    leading: Icon(
-                      item['source'] == 'GWS' ? Icons.inventory : Icons.warehouse,
-                      color: item['source'] == 'GWS' ? Colors.blue : Colors.orange,
-                    ),
-                    title: Row(
+                    leading: Icon(item['source'] == 'GWS' ? Icons.inventory : Icons.warehouse, color: item['source'] == 'GWS' ? Colors.blue : Colors.orange),
+                    title: Row(children: [Text((item['code'] ?? '-').toString().toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 12), Expanded(child: Text(item['ticket_bc'] ?? '-', style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontFamily: 'monospace'), overflow: TextOverflow.ellipsis))]),
+                    subtitle: Row(children: [Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(color: _getWeeklyColor(weekly).withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Text("Weekly: $weekly", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _getWeeklyColor(weekly)))), const SizedBox(width: 12), Text("Qty: ${item['qty']} Pcs", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold))]),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text((item['code'] ?? '-').toString().toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold)),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            item['ticket_bc'] ?? '-',
-                            style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontFamily: 'monospace'),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
+                        IconButton(icon: const Icon(Icons.edit, color: Colors.orange, size: 20), onPressed: () => _editItem(item, item['source']), tooltip: "Edit Qty/Lokasi"),
+                        IconButton(icon: Icon(isChecked ? Icons.check_circle : Icons.check_circle_outline, color: isChecked ? Colors.green : Colors.grey), onPressed: () { _saveCheckedStatus(itemId, !isChecked); }),
+                        IconButton(icon: Icon(currentNote.isNotEmpty ? Icons.edit_note : Icons.note_add, color: currentNote.isNotEmpty ? Colors.blue : Colors.grey), onPressed: () { _showNoteDialog(itemId, currentNote); }),
                       ],
-                    ),
-                    subtitle: Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: _getWeeklyColor(item['weekly']?.toString() ?? '-').withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            "Weekly: ${item['weekly'] ?? '-'}",
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: _getWeeklyColor(item['weekly']?.toString() ?? '-'),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          "Qty: ${item['qty']} Pcs",
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                        ),
-                      ],
-                    ),
-                    trailing: GestureDetector(
-                      onTap: () {
-                        _saveCheckedStatus(itemId, !isChecked);
-                      },
-                      child: Chip(
-                        label: Text(item['source'] ?? ''),
-                        backgroundColor: isChecked
-                            ? Colors.green
-                            : (item['source'] == 'GWS' ? Colors.blue.shade100 : Colors.orange.shade100),
-                        labelStyle: TextStyle(
-                          color: isChecked ? Colors.white : (item['source'] == 'GWS' ? Colors.blue.shade700 : Colors.orange.shade700),
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
                     ),
                   ),
                 );
@@ -2361,106 +2601,53 @@ class _CekByAreaPageState extends State<CekByAreaPage> {
     }
     
     var blocks = getBlocksWithLines();
-    
-    if (blocks.isEmpty) {
-      return const Center(child: Text("Tidak ada data lokasi"));
-    }
+    if (blocks.isEmpty) return const Center(child: Text("Tidak ada data lokasi"));
 
     return ListView.builder(
       itemCount: blocks.length,
       itemBuilder: (context, index) {
         String block = blocks.keys.elementAt(index);
         List<String> lines = blocks[block]!;
-        
         int totalQtyBlock = 0;
         for (var line in lines) {
           var items = getItemsByLine(line);
-          for (var item in items) {
-            totalQtyBlock += (item['qty'] ?? 0) as int;
-          }
+          for (var item in items) totalQtyBlock += (item['qty'] ?? 0) as int;
         }
-        
         return Card(
           margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           child: ExpansionTile(
-            leading: CircleAvatar(
-              backgroundColor: block.startsWith('1') ? Colors.blue.shade100 : Colors.green.shade100,
-              child: Text(block),
-            ),
+            leading: CircleAvatar(backgroundColor: block.startsWith('1') ? Colors.blue.shade100 : Colors.green.shade100, child: Text(block)),
             title: Text("BLOK $block", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
             subtitle: Text("${lines.length} Line | Total Qty: $totalQtyBlock Pcs"),
             children: lines.map((line) {
               var items = getItemsByLine(line);
               int totalQtyLine = items.fold(0, (sum, item) => sum + ((item['qty'] ?? 0) as int));
-              
               return Card(
                 margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                 color: block.startsWith('1') ? Colors.blue.shade50 : Colors.green.shade50,
                 child: ExpansionTile(
-                  title: Text(line, style: const TextStyle(fontWeight: FontWeight.bold)),
+                  title: Row(children: [Expanded(child: Text(line, style: const TextStyle(fontWeight: FontWeight.bold))), IconButton(icon: const Icon(Icons.add_circle, color: Colors.green, size: 20), onPressed: () => _showAddItemDialog(line), tooltip: "Tambah data di lokasi ini")]),
                   subtitle: Text("${items.length} item | Total Qty: $totalQtyLine Pcs"),
-                  children: items.map((item) {
-                    String itemId = '${item['source']}_${item['code']}_${item['weekly']}_${item['ticket_bc']}';
+                  children: items.asMap().entries.map((entry) {
+                    final idx = entry.key;
+                    final item = entry.value;
+                    final String itemId = item['unique_id'];
                     bool isChecked = checkedItems.contains(itemId);
-                    
+                    String currentNote = notes[itemId] ?? '';
+                    String weekly = item['weekly']?.toString() ?? '-';
                     return Container(
                       color: isChecked ? Colors.green.shade100 : null,
                       child: ListTile(
-                        leading: Icon(
-                          item['source'] == 'GWS' ? Icons.inventory : Icons.warehouse,
-                          color: item['source'] == 'GWS' ? Colors.blue : Colors.orange,
-                        ),
-                        title: Row(
+                        leading: Icon(item['source'] == 'GWS' ? Icons.inventory : Icons.warehouse, color: item['source'] == 'GWS' ? Colors.blue : Colors.orange),
+                        title: Row(children: [Text((item['code'] ?? '-').toString().toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 12), Expanded(child: Text(item['ticket_bc'] ?? '-', style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontFamily: 'monospace'), overflow: TextOverflow.ellipsis))]),
+                        subtitle: Row(children: [Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(color: _getWeeklyColor(weekly).withOpacity(0.2), borderRadius: BorderRadius.circular(12)), child: Text("Weekly: $weekly", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _getWeeklyColor(weekly)))), const SizedBox(width: 12), Text("Qty: ${item['qty']} Pcs", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold))]),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text((item['code'] ?? '-').toString().toUpperCase(), style: const TextStyle(fontWeight: FontWeight.bold)),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                item['ticket_bc'] ?? '-',
-                                style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontFamily: 'monospace'),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
+                            IconButton(icon: const Icon(Icons.edit, color: Colors.orange, size: 20), onPressed: () => _editItem(item, item['source']), tooltip: "Edit Qty/Lokasi"),
+                            IconButton(icon: Icon(isChecked ? Icons.check_circle : Icons.check_circle_outline, color: isChecked ? Colors.green : Colors.grey), onPressed: () { _saveCheckedStatus(itemId, !isChecked); }),
+                            IconButton(icon: Icon(currentNote.isNotEmpty ? Icons.edit_note : Icons.note_add, color: currentNote.isNotEmpty ? Colors.blue : Colors.grey), onPressed: () { _showNoteDialog(itemId, currentNote); }),
                           ],
-                        ),
-                        subtitle: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: _getWeeklyColor(item['weekly']?.toString() ?? '-').withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                "Weekly: ${item['weekly'] ?? '-'}",
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: _getWeeklyColor(item['weekly']?.toString() ?? '-'),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Text(
-                              "Qty: ${item['qty']} Pcs",
-                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                          ],
-                        ),
-                        trailing: GestureDetector(
-                          onTap: () {
-                            _saveCheckedStatus(itemId, !isChecked);
-                          },
-                          child: Chip(
-                            label: Text(item['source'] ?? ''),
-                            backgroundColor: isChecked
-                                ? Colors.green
-                                : (item['source'] == 'GWS' ? Colors.blue.shade100 : Colors.orange.shade100),
-                            labelStyle: TextStyle(
-                              color: isChecked ? Colors.white : (item['source'] == 'GWS' ? Colors.blue.shade700 : Colors.orange.shade700),
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
                         ),
                       ),
                     );
